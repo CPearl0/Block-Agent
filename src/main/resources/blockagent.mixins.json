@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "io.github.cpearl0.blockagent.game.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "ClientLevelAccessor",
+    "ClientLevelEvidenceMixin",
+    "ClientInventoryEvidenceMixin",
+    "ClientControlMixin",
+    "ClientKeyMappingMixin",
+    "ClientToggleKeyMappingMixin"
+  ],
+  "injectors": { "defaultRequire": 1 }
+}

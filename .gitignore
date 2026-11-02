@@ -1,0 +1,31 @@
+# Gradle outputs and game instances
+.gradle/
+build/
+out/
+run/
+runs/
+logs/
+crash-reports/
+
+# IDE and operating-system files
+.idea/
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+local.properties
+/config/
+/blockagent/
+
+# The Gradle Wrapper JAR is part of the source distribution.
+!gradle/wrapper/gradle-wrapper.jar
