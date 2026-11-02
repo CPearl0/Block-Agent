@@ -4,6 +4,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import io.github.cpearl0.blockagent.bridge.LocalBridge;
 import io.github.cpearl0.blockagent.core.AgentController;
+import io.github.cpearl0.blockagent.core.BotConfig;
 import io.github.cpearl0.blockagent.game.BotControl;
 import io.github.cpearl0.blockagent.game.GameBridge;
 import net.minecraft.client.KeyMapping;
@@ -144,7 +145,12 @@ public final class BlockAgentMod {
 
     private void tick(ClientTickEvent.Post event) {
         AgentController current = agent;
-        BotControl.tick(current != null && current.isBusy(), () -> command("stop"));
+        BotConfig.Survival survival =
+                current == null ? BotConfig.Survival.defaults() : current.survival();
+        boolean running = current != null && current.isBusy();
+        game.configureSurvival(survival, running);
+        BotControl.configure(survival);
+        BotControl.tick(running, () -> command("stop"));
         while (stopKey.consumeClick()) command("stop");
         game.tick();
         if (current != null) current.tick();

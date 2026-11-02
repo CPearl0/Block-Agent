@@ -3,6 +3,7 @@ package io.github.cpearl0.blockagent.game;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import io.github.cpearl0.blockagent.core.BotConfig;
 import io.github.cpearl0.blockagent.core.CancellationToken;
 import io.github.cpearl0.blockagent.core.ToolExecutor;
 import java.util.Map;
@@ -12,12 +13,16 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 
 /** All game reads and mutations are serialized on the client tick thread. */
 public final class GameBridge implements ToolExecutor {
     public interface Action extends AutoCloseable {
         /** Null means that the action is still running. */
         JsonObject tick();
+
+        /** Pause a world action so a host reflex can move or eat, then keep the same action. */
+        default void yieldToHost() {}
 
         @Override
         default void close() {}
@@ -63,9 +68,18 @@ public final class GameBridge implements ToolExecutor {
     private final Map<CancellationToken, Session> sessions = new WeakHashMap<>();
 
     private final AtomicLong generation = new AtomicLong();
+    private final HostSurvival hostSurvival = new HostSurvival();
+    private volatile BotConfig.Survival survival = BotConfig.Survival.defaults();
+    private volatile boolean taskRunning;
     private volatile Request request;
     private Action action;
     private volatile Object world, player;
+
+    /** Client thread reads these; the mod tick publishes the loaded config and busy flag. */
+    public void configureSurvival(BotConfig.Survival survival, boolean taskRunning) {
+        this.survival = survival == null ? BotConfig.Survival.defaults() : survival;
+        this.taskRunning = taskRunning;
+    }
 
     @Override
     public JsonArray definitions() {
@@ -151,25 +165,16 @@ public final class GameBridge implements ToolExecutor {
 
     public void tick() {
         var mc = Minecraft.getInstance();
-        if (world != mc.level || player != mc.player) {
-            for (var binding : sessions.entrySet())
-                if (binding.getValue().world != mc.level || binding.getValue().player != mc.player)
-                    binding.getKey().cancel();
-            if (request != null && (request.world != mc.level || request.player != mc.player)) {
-                request.root.cancel();
-                abortActive();
-            }
-            for (Request pending : queue)
-                if (pending.world != mc.level || pending.player != mc.player) {
-                    pending.root.cancel();
-                    cancelRequest(pending);
-                }
-            world = mc.level;
-            player = mc.player;
-        }
+        BotConfig.Survival policy = survival;
+        syncSession(mc, policy);
+        if (mc.player != null && mc.level != null) hostSurvival.tickDeath(mc, policy, taskRunning);
         if (request == null) {
             request = queue.poll();
-            if (request == null) return;
+            if (request == null) {
+                if (mc.player != null && mc.player.isAlive())
+                    hostSurvival.tickLiving(mc, policy, taskRunning, "");
+                return;
+            }
         }
         try {
             request.token.throwIfCancelled();
@@ -181,8 +186,21 @@ public final class GameBridge implements ToolExecutor {
                 finish(failure("player_dead", "Player is dead", null));
                 return;
             }
+            HostSurvival.Decision decision =
+                    hostSurvival.tickLiving(mc, policy, taskRunning, request.name);
+            if (decision.preempt()) {
+                if (action != null) action.yieldToHost();
+                if (decision.interrupt())
+                    finish(
+                            failure(
+                                    "threat_interrupted",
+                                    "Host paused this action and backed away from a nearby threat. Continue the same goal from a safer position.",
+                                    decision.evidence()));
+                return;
+            }
             if (action == null) action = create(mc, request.name, request.args, request.token);
             JsonObject result = action.tick();
+            if (request == null) return;
             if (request.world != mc.level || request.player != mc.player) {
                 Request invalid = request;
                 invalid.root.cancel();
@@ -202,6 +220,70 @@ public final class GameBridge implements ToolExecutor {
                                     : error.getMessage(),
                             null));
         }
+    }
+
+    /**
+     * A same-dimension respawn replaces the client player object. Adopt that player and fail only
+     * the in-flight action so the command token stays alive. Disconnects and dimension changes
+     * still cancel.
+     */
+    private void syncSession(Minecraft mc, BotConfig.Survival policy) {
+        if (world == mc.level && player == mc.player) return;
+        if (canAdopt(mc, policy)) {
+            boolean stale =
+                    request != null && (request.player != mc.player || request.world != mc.level);
+            for (var binding : sessions.entrySet()) {
+                if (sameDimension(binding.getValue().world, mc.level))
+                    binding.setValue(new Session(mc.level, mc.player));
+                else binding.getKey().cancel();
+            }
+            retarget(request, mc);
+            for (Request pending : queue) retarget(pending, mc);
+            world = mc.level;
+            player = mc.player;
+            if (stale)
+                finish(
+                        failure(
+                                "player_respawned",
+                                "Player respawned; repeat the action against the fresh player",
+                                null));
+            return;
+        }
+        for (var binding : sessions.entrySet())
+            if (binding.getValue().world != mc.level || binding.getValue().player != mc.player)
+                binding.getKey().cancel();
+        if (request != null && (request.world != mc.level || request.player != mc.player)) {
+            request.root.cancel();
+            abortActive();
+        }
+        for (Request pending : queue)
+            if (pending.world != mc.level || pending.player != mc.player) {
+                pending.root.cancel();
+                cancelRequest(pending);
+            }
+        world = mc.level;
+        player = mc.player;
+    }
+
+    private boolean canAdopt(Minecraft mc, BotConfig.Survival policy) {
+        if (!policy.autoResumeAfterDeath() || !taskRunning) return false;
+        if (!(world instanceof ClientLevel previous) || player == null) return false;
+        if (mc.player == null || mc.level == null || !mc.player.isAlive()) return false;
+        if (mc.level.getLevelData().isHardcore()) return false;
+        return previous.dimension().equals(mc.level.dimension());
+    }
+
+    private static boolean sameDimension(Object previous, ClientLevel current) {
+        return previous instanceof ClientLevel level
+                && level.dimension().equals(current.dimension());
+    }
+
+    private static void retarget(Request pending, Minecraft mc) {
+        if (pending == null || mc.level == null || mc.player == null) return;
+        if (pending.world instanceof ClientLevel level
+                && !level.dimension().equals(mc.level.dimension())) return;
+        pending.world = mc.level;
+        pending.player = mc.player;
     }
 
     private Action create(Minecraft mc, String name, JsonObject args, CancellationToken token) {

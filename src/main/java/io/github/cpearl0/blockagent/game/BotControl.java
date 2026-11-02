@@ -1,14 +1,17 @@
 package io.github.cpearl0.blockagent.game;
 
+import io.github.cpearl0.blockagent.core.BotConfig;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.ChatScreen;
+import net.minecraft.client.gui.screens.DeathScreen;
 import net.minecraft.client.gui.screens.PauseScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.MenuAccess;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.neoforged.neoforge.client.settings.IKeyConflictContext;
 import net.neoforged.neoforge.client.settings.KeyConflictContext;
 
@@ -20,6 +23,7 @@ public final class BotControl {
     private static Screen menuScreen;
     private static Runnable stop = () -> {};
     private static boolean owned, changingScreen, blockedUntilIdle;
+    private static volatile boolean autoResumeAfterDeath = true;
     private static String savedDraft = "";
 
     private BotControl() {}
@@ -30,6 +34,13 @@ public final class BotControl {
 
     public static boolean isControlScreen(Minecraft mc) {
         return owned && mc.screen == chat;
+    }
+
+    public static void configure(BotConfig.Survival survival) {
+        autoResumeAfterDeath =
+                survival == null
+                        ? BotConfig.Survival.defaults().autoResumeAfterDeath()
+                        : survival.autoResumeAfterDeath();
     }
 
     public static boolean ownsKey(KeyMapping key) {
@@ -52,15 +63,28 @@ public final class BotControl {
             return;
         }
         if (owned && !samePlayer(mc)) {
-            stop.run();
-            release(true);
-            return;
+            // Keep ownership across a same-dimension auto-resume death so a transient
+            // DeathScreen/respawn overlay cannot hit the !owned stop path.
+            if (mc.player != null && !mc.player.isAlive() && autoRespawn(mc)) return;
+            if (resumableHere(mc) && mc.player != null && mc.player.isAlive()) adopt(mc);
+            else if (resumableHere(mc)) {
+                release(false);
+                return;
+            } else {
+                stop.run();
+                release(true);
+                return;
+            }
         }
         if (!running || mc.player == null || mc.level == null || !mc.player.isAlive()) {
-            if (owned) release(true);
+            if (owned) {
+                if (running && mc.player != null && !mc.player.isAlive() && autoRespawn(mc)) return;
+                release(true);
+            }
             return;
         }
         if (!owned) {
+            if (mc.screen instanceof DeathScreen && autoRespawn(mc)) return;
             if (mc.screen != null
                     && !(mc.screen instanceof ChatScreen)
                     && !(mc.screen instanceof MenuAccess<?>)
@@ -109,7 +133,10 @@ public final class BotControl {
      * state.
      */
     public static boolean interceptScreen(Minecraft mc, Screen next) {
-        if (!owned || changingScreen || !samePlayer(mc)) return false;
+        if (changingScreen) return false;
+        // Keep the command alive across a normal-mode death. The host sends respawn.
+        if (next instanceof DeathScreen && autoRespawn(mc)) return true;
+        if (!owned || !samePlayer(mc)) return false;
         if (next == null
                 || next instanceof ChatScreen
                 || next instanceof PauseScreen
@@ -117,7 +144,7 @@ public final class BotControl {
             rememberMenu(next);
             return true;
         }
-        // Death, disconnection and server confirmation screens must remain actionable.
+        // Disconnection and server confirmation screens must remain actionable.
         blockedUntilIdle = true;
         stop.run();
         release(false);
@@ -174,6 +201,25 @@ public final class BotControl {
 
     private static boolean samePlayer(Minecraft mc) {
         return mc.level == world && mc.player == player && mc.player != null && mc.player.isAlive();
+    }
+
+    private static void adopt(Minecraft mc) {
+        world = mc.level;
+        player = mc.player;
+    }
+
+    /** Same-dimension, non-hardcore death while auto-resume is on. The command is not a stop. */
+    private static boolean resumableHere(Minecraft mc) {
+        return autoRespawn(mc)
+                && world instanceof ClientLevel previous
+                && previous.dimension().equals(mc.level.dimension());
+    }
+
+    private static boolean autoRespawn(Minecraft mc) {
+        return autoResumeAfterDeath
+                && mc.player != null
+                && mc.level != null
+                && !mc.level.getLevelData().isHardcore();
     }
 
     private static void rememberMenu(Screen screen) {

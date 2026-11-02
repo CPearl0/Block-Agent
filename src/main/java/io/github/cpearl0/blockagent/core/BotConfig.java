@@ -9,9 +9,16 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Existing files are read-only; no migration silently changes a user's provider choices. */
+/**
+ * Existing files are read-only; no migration silently changes a user's provider choices. Missing
+ * survival keys use {@link Survival#defaults()} so an older file resumes after death without a
+ * rewrite.
+ */
 public record BotConfig(
-        BotConfig.Provider provider, BotConfig.Agent agent, BotConfig.Autonomy autonomy) {
+        BotConfig.Provider provider,
+        BotConfig.Agent agent,
+        BotConfig.Autonomy autonomy,
+        BotConfig.Survival survival) {
     public record Provider(
             String baseUrl,
             String apiKey,
@@ -62,12 +69,29 @@ public record BotConfig(
 
     public record Autonomy(boolean enabled, long decisionIntervalMs, long taskTimeoutMs) {}
 
+    /**
+     * Host survival, applied on the client tick and not by an LLM call per frame.
+     *
+     * <p>{@code autoResumeAfterDeath} respawns in the same dimension and continues the same
+     * command. {@code hostThreatPolicy} eats when hungry or hurt, backs off from nearby hostiles,
+     * and pauses dig/collect while threatened. {@code maxDeathResumes} caps automatic respawns. A
+     * human or API stop still cancels immediately. Hardcore and a respawn that changes dimension do
+     * not resume.
+     */
+    public record Survival(
+            boolean autoResumeAfterDeath, boolean hostThreatPolicy, int maxDeathResumes) {
+        public static Survival defaults() {
+            return new Survival(true, true, 8);
+        }
+    }
+
     public static BotConfig load(Path path) throws IOException {
         if (!Files.exists(path)) JsonSupport.writeAtomic(path, defaults());
         JsonObject root = JsonSupport.readObject(path, 128 * 1024);
         JsonObject p = JsonSupport.child(root, "provider"),
                 a = JsonSupport.child(root, "agent"),
-                u = JsonSupport.child(root, "autonomy");
+                u = JsonSupport.child(root, "autonomy"),
+                s = JsonSupport.child(root, "survival");
         String type =
                 option(
                         p,
@@ -105,7 +129,11 @@ public record BotConfig(
                 new Autonomy(
                         JsonSupport.bool(u, "enabled", false),
                         JsonSupport.number(u, "decisionIntervalMs", 60_000, 10_000, 3_600_000),
-                        JsonSupport.number(u, "taskTimeoutMs", 600_000, 30_000, 3_600_000)));
+                        JsonSupport.number(u, "taskTimeoutMs", 600_000, 30_000, 3_600_000)),
+                new Survival(
+                        JsonSupport.bool(s, "autoResumeAfterDeath", true),
+                        JsonSupport.bool(s, "hostThreatPolicy", true),
+                        n(s, "maxDeathResumes", 8, 0, 100)));
     }
 
     private static int n(JsonObject o, String k, int d, int min, int max) {
@@ -161,6 +189,14 @@ public record BotConfig(
                         131072),
                 "autonomy",
                 JsonSupport.of(
-                        "enabled", false, "decisionIntervalMs", 60000, "taskTimeoutMs", 600000));
+                        "enabled", false, "decisionIntervalMs", 60000, "taskTimeoutMs", 600000),
+                "survival",
+                JsonSupport.of(
+                        "autoResumeAfterDeath",
+                        true,
+                        "hostThreatPolicy",
+                        true,
+                        "maxDeathResumes",
+                        8));
     }
 }

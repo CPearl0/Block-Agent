@@ -24,6 +24,7 @@ class ProgramInterpreterTest {
     private static final class FakeTools implements ToolExecutor {
         final AtomicInteger calls = new AtomicInteger();
         boolean failure;
+        String code = "";
 
         public JsonArray definitions() {
             return new JsonArray();
@@ -37,6 +38,8 @@ class ProgramInterpreterTest {
                     JsonSupport.of(
                             "ok",
                             !failure,
+                            "code",
+                            code,
                             "message",
                             failure ? "blocked" : "accepted",
                             "data",
@@ -171,6 +174,33 @@ class ProgramInterpreterTest {
                                             new JsonObject(),
                                             token,
                                             new ProgramInterpreter.Budget()));
+        }
+    }
+
+    @Test
+    void playerDeathEscapesAllowFailure() throws Exception {
+        FakeTools tools = new FakeTools();
+        tools.failure = true;
+        tools.code = "player_dead";
+        try (CancellationToken token = new CancellationToken(10000)) {
+            ProgramInterpreter.ToolFailure failure =
+                    assertThrows(
+                            ProgramInterpreter.ToolFailure.class,
+                            () ->
+                                    new ProgramInterpreter(LIMITS, tools, receipt -> {})
+                                            .run(
+                                                    program(
+                                                            """
+                            [{"op":"call","tool":"generic_action","allowFailure":true},
+                             {"op":"return","value":{"status":"done","summary":"should not run"}}]
+                            """),
+                                                    new JsonObject(),
+                                                    new JsonObject(),
+                                                    new JsonObject(),
+                                                    token,
+                                                    new ProgramInterpreter.Budget()));
+            assertEquals("player_dead", failure.receipt.get("code").getAsString());
+            assertEquals(1, tools.calls.get());
         }
     }
 }

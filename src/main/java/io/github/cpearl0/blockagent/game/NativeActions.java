@@ -120,6 +120,11 @@ final class NativeActions {
                 }
             throw new IllegalStateException("Inventory has no " + item);
         }
+
+        void reset() {
+            sent = false;
+            ticks = 0;
+        }
     }
 
     private static final class Equip implements GameBridge.Action {
@@ -337,6 +342,17 @@ final class NativeActions {
             predictedRemoval = !mc.level.getBlockState(position).equals(original);
             mc.player.swing(InteractionHand.MAIN_HAND);
             return null;
+        }
+
+        @Override
+        public void yieldToHost() {
+            if (mc.gameMode != null && mc.level == world) mc.gameMode.stopDestroyBlock();
+            if (pickup != null) return;
+            BlockState current = mc.level == world ? mc.level.getBlockState(position) : original;
+            if (started && (predictedRemoval || !current.equals(original))) return;
+            started = false;
+            navigation = null;
+            if (selector != null) selector.reset();
         }
 
         @Override
@@ -606,6 +622,11 @@ final class NativeActions {
         }
 
         @Override
+        public void yieldToHost() {
+            navigation = null;
+        }
+
+        @Override
         public void close() {
             Navigation.stop(mc);
         }
@@ -695,6 +716,11 @@ final class NativeActions {
                         "Native item interaction did not consume the action",
                         WorldData.block(mc, target));
             return null;
+        }
+
+        @Override
+        public void yieldToHost() {
+            BotControl.setKeyDown(mc.options.keyShift, false);
         }
 
         @Override
@@ -865,13 +891,18 @@ final class NativeActions {
         }
 
         @Override
-        public void close() {
+        public void yieldToHost() {
             BotControl.setKeyDown(mc.options.keyUse, false);
             if (mc.level == world
                     && mc.player == player
                     && mc.player != null
                     && mc.player.isUsingItem()
                     && mc.gameMode != null) mc.gameMode.releaseUsingItem(mc.player);
+        }
+
+        @Override
+        public void close() {
+            yieldToHost();
         }
     }
 
@@ -948,6 +979,11 @@ final class NativeActions {
             }
             navigation.tick();
             return null;
+        }
+
+        @Override
+        public void yieldToHost() {
+            navigation = null;
         }
 
         @Override

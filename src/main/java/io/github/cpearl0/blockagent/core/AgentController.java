@@ -73,6 +73,10 @@ public final class AgentController implements AutoCloseable {
         return busy;
     }
 
+    public BotConfig.Survival survival() {
+        return config.survival();
+    }
+
     private synchronized void enqueue(String command, String forcedProject, boolean autonomous) {
         if (closed) throw new IllegalStateException("Agent is closed");
         String text = Objects.requireNonNull(command).trim();
@@ -164,6 +168,7 @@ public final class AgentController implements AutoCloseable {
             result.addProperty("llmRequests", stats.llmRequests);
             result.addProperty("toolCalls", stats.toolCalls);
             result.addProperty("localSegments", stats.localSegments);
+            result.addProperty("deathResumes", stats.deathResumes);
             result.addProperty("toolCallsIncludeHostObservations", true);
         }
         if (lastResult != null) result.add("lastResult", lastResult.deepCopy());
@@ -182,10 +187,12 @@ public final class AgentController implements AutoCloseable {
         String projectId = null, summary = "", outcome = "failed";
         boolean accepted = false;
         Evidence evidence = new Evidence(settings.agent().maxEvidenceBytes());
+        Life life = new Life();
         try (LlmClient llm = new LlmClient(settings.provider(), line -> say(owner, line))) {
             assertCurrent(owner, token);
             settings.provider().requireConfigured();
-            JsonObject initial = observe(owner, token, evidence, settings, stats);
+            JsonObject initial =
+                    observe(owner, token, evidence, settings, stats, life, command, commandId);
             String scope = scope(initial, commandId);
             lastScope = scope;
             memory.beginCommand(commandId, command, initial, started);
@@ -201,7 +208,9 @@ public final class AgentController implements AutoCloseable {
                 assertCurrent(owner, token);
                 publish(owner, "planning", command, "规划可验收的结果", commandId);
                 JsonObject context =
-                        context(command, commandId, started, initial, snapshot, evidence, settings);
+                        context(
+                                command, commandId, started, initial, snapshot, evidence, settings,
+                                stats);
                 context.add("knownProjects", memory.projects(scope));
                 context.add("recentEpisodes", memory.episodes());
                 context.addProperty("replanReason", failure);
@@ -209,7 +218,8 @@ public final class AgentController implements AutoCloseable {
                 stats.llmRequests++;
                 JsonObject plan = llm.complete(AgentPrompts.PLAN, context, token);
                 assertCurrent(owner, token);
-                JsonObject afterPlanning = observe(owner, token, evidence, settings, stats);
+                JsonObject afterPlanning =
+                        observe(owner, token, evidence, settings, stats, life, command, commandId);
                 requireSameWorld(initial, afterPlanning);
                 snapshot = afterPlanning;
                 JsonArray goals = requireArray(plan, "goals");
@@ -237,7 +247,7 @@ public final class AgentController implements AutoCloseable {
                     GoalResult result =
                             executeGoal(
                                     goal, command, commandId, started, owner, token, settings, llm,
-                                    initial, snapshot, evidence, project, stats);
+                                    initial, snapshot, evidence, project, stats, life);
                     snapshot = result.snapshot;
                     goalSummaries.add(result.summary);
                     if (result.replan) {
@@ -247,11 +257,14 @@ public final class AgentController implements AutoCloseable {
                     }
                 }
                 if (invalidated) continue;
-                snapshot = observe(owner, token, evidence, settings, stats);
+                snapshot =
+                        observe(owner, token, evidence, settings, stats, life, command, commandId);
                 publish(owner, "reviewing", command, "独立核对原指令与真实回执", commandId);
                 requireSameWorld(initial, snapshot);
                 JsonObject reviewInput =
-                        context(command, commandId, started, initial, snapshot, evidence, settings);
+                        context(
+                                command, commandId, started, initial, snapshot, evidence, settings,
+                                stats);
                 reviewInput.add("goalSummaries", goalSummaries);
                 boolean fullProjectReview =
                         project != null && project.getAsJsonArray("tasks").size() == 1;
@@ -349,6 +362,8 @@ public final class AgentController implements AutoCloseable {
                                 stats.toolCalls,
                                 "localSegments",
                                 stats.localSegments,
+                                "deathResumes",
+                                stats.deathResumes,
                                 "toolCallsIncludeHostObservations",
                                 true,
                                 "completedAtMs",
@@ -381,7 +396,8 @@ public final class AgentController implements AutoCloseable {
             JsonObject initialSnapshot,
             Evidence evidence,
             JsonObject project,
-            ExecutionStats stats)
+            ExecutionStats stats,
+            Life life)
             throws Exception {
         ProgramInterpreter.Budget budget = new ProgramInterpreter.Budget();
         JsonObject state = new JsonObject(), snapshot = initialSnapshot;
@@ -402,7 +418,9 @@ public final class AgentController implements AutoCloseable {
                         JsonSupport.string(goal, "objective", ""),
                         commandId);
                 JsonObject request =
-                        context(command, commandId, started, initial, snapshot, evidence, settings);
+                        context(
+                                command, commandId, started, initial, snapshot, evidence, settings,
+                                stats);
                 request.add("goal", goal);
                 request.add("previousRoutineState", previousState);
                 request.addProperty("repairReason", reason);
@@ -421,7 +439,8 @@ public final class AgentController implements AutoCloseable {
                 assertCurrent(owner, token);
                 program = requireArray(generated, "program");
                 state = new JsonObject();
-                snapshot = observe(owner, token, evidence, settings, stats);
+                snapshot =
+                        observe(owner, token, evidence, settings, stats, life, command, commandId);
                 requireSameWorld(initial, snapshot);
             }
             publish(
@@ -460,7 +479,8 @@ public final class AgentController implements AutoCloseable {
                                 token,
                                 budget);
                 assertCurrent(owner, token);
-                snapshot = observe(owner, token, evidence, settings, stats);
+                snapshot =
+                        observe(owner, token, evidence, settings, stats, life, command, commandId);
                 requireSameWorld(initial, snapshot);
                 String status = JsonSupport.string(result, "status", "");
                 boolean progress =
@@ -508,10 +528,26 @@ public final class AgentController implements AutoCloseable {
                     | IllegalArgumentException
                     | IllegalStateException ex) {
                 assertCurrent(owner, token);
+                if (ex instanceof ProgramInterpreter.ToolFailure failure
+                        && isLifeTransition(failure.receipt)) {
+                    if (!settings.survival().autoResumeAfterDeath())
+                        throw new IllegalStateException(
+                                "Player died and autoResumeAfterDeath is disabled");
+                    snapshot =
+                            resumeAfterDeath(
+                                    owner, token, evidence, settings, stats, life, command,
+                                    commandId);
+                    requireSameWorld(initial, snapshot);
+                    reason = "Player died; respawned and continuing the same goal";
+                    previousState = state;
+                    program = null;
+                    continue;
+                }
                 reason = safeMessage(ex);
                 previousState = state;
                 program = null;
-                snapshot = observe(owner, token, evidence, settings, stats);
+                snapshot =
+                        observe(owner, token, evidence, settings, stats, life, command, commandId);
                 requireSameWorld(initial, snapshot);
                 boolean progress =
                         !stableSnapshot(before).equals(stableSnapshot(snapshot))
@@ -530,6 +566,78 @@ public final class AgentController implements AutoCloseable {
     }
 
     private JsonObject observe(
+            long owner,
+            CancellationToken token,
+            Evidence evidence,
+            BotConfig settings,
+            ExecutionStats stats,
+            Life life,
+            String command,
+            String commandId)
+            throws Exception {
+        JsonObject result = observeOnce(owner, token, evidence, settings, stats);
+        if (isLifeTransition(result)) {
+            if (!settings.survival().autoResumeAfterDeath())
+                throw new IllegalStateException(
+                        "Fresh observe failed: "
+                                + JsonSupport.string(result, "message", "Player is dead"));
+            return resumeAfterDeath(
+                    owner, token, evidence, settings, stats, life, command, commandId);
+        }
+        return acceptLiving(result, life);
+    }
+
+    /**
+     * Wait until the host respawns in the same dimension, then keep this command's goal, memory and
+     * program loop. A human stop cancels the token and leaves this wait immediately.
+     */
+    private JsonObject resumeAfterDeath(
+            long owner,
+            CancellationToken token,
+            Evidence evidence,
+            BotConfig settings,
+            ExecutionStats stats,
+            Life life,
+            String command,
+            String commandId)
+            throws Exception {
+        if (!life.deathOpen) {
+            life.deathOpen = true;
+            int attempt = ++stats.deathResumes;
+            if (attempt > settings.survival().maxDeathResumes())
+                throw new IllegalStateException(
+                        "Death resume limit reached ("
+                                + settings.survival().maxDeathResumes()
+                                + "); the same goal stops after repeated deaths, not a human stop");
+            evidence.add(deathReceipt(attempt, life.lastLiving));
+            publish(
+                    owner,
+                    "respawning",
+                    command,
+                    "玩家死亡，正在自动重生并继续同一目标（第 " + attempt + " 次）",
+                    commandId);
+        }
+        long deadline =
+                System.nanoTime()
+                        + TimeUnit.MILLISECONDS.toNanos(HostSurvivalPolicy.RESPAWN_WAIT_MS);
+        while (true) {
+            assertCurrent(owner, token);
+            JsonObject result = observeOnce(owner, token, evidence, settings, stats);
+            if (!isLifeTransition(result)) return acceptLiving(result, life);
+            if (System.nanoTime() > deadline)
+                throw new IllegalStateException(
+                        "Timed out waiting to respawn and continue the same goal");
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                token.throwIfCancelled();
+                throw new CancellationException("Interrupted while waiting to respawn");
+            }
+        }
+    }
+
+    private JsonObject observeOnce(
             long owner,
             CancellationToken token,
             Evidence evidence,
@@ -553,6 +661,7 @@ public final class AgentController implements AutoCloseable {
                 throw new IllegalStateException("Fresh observation timed out", ex);
             }
             assertCurrent(owner, token);
+            if (isLifeTransition(result)) return result;
             if (!JsonSupport.bool(result, "ok", false)
                     || !result.has("data")
                     || !result.get("data").isJsonObject())
@@ -569,13 +678,47 @@ public final class AgentController implements AutoCloseable {
                             result,
                             "completedAtMs",
                             System.currentTimeMillis()));
-            return result.getAsJsonObject("data").deepCopy();
+            return result;
         } finally {
             if (pending != null && !pending.isDone()) {
                 tools.cancel();
                 pending.handle((v, e) -> null).join();
             }
         }
+    }
+
+    private static JsonObject acceptLiving(JsonObject result, Life life) {
+        JsonObject data = result.getAsJsonObject("data").deepCopy();
+        life.lastLiving = data;
+        life.deathOpen = false;
+        return data;
+    }
+
+    private static JsonObject deathReceipt(int attempt, JsonObject lastLiving) {
+        JsonObject data = JsonSupport.of("attempt", attempt, "resume", "same_command");
+        if (lastLiving != null && lastLiving.has("position"))
+            data.add("lastLivingPosition", lastLiving.get("position").deepCopy());
+        return JsonSupport.of(
+                "tool",
+                "host_respawn",
+                "args",
+                JsonSupport.of("attempt", attempt),
+                "result",
+                JsonSupport.of(
+                        "ok",
+                        true,
+                        "message",
+                        "Player died. Host is respawning and the same command continues. Recover dropped items near the last living position if they are still loaded.",
+                        "data",
+                        data),
+                "completedAtMs",
+                System.currentTimeMillis());
+    }
+
+    private static boolean isLifeTransition(JsonObject result) {
+        if (result == null || JsonSupport.bool(result, "ok", false)) return false;
+        String code = JsonSupport.string(result, "code", "");
+        return code.equals("player_dead") || code.equals("player_respawned");
     }
 
     private JsonObject context(
@@ -585,7 +728,8 @@ public final class AgentController implements AutoCloseable {
             JsonObject initial,
             JsonObject snapshot,
             Evidence evidence,
-            BotConfig settings) {
+            BotConfig settings,
+            ExecutionStats stats) {
         return JsonSupport.of(
                 "command",
                 command,
@@ -608,7 +752,17 @@ public final class AgentController implements AutoCloseable {
                 "historicalEvidence",
                 evidence.snapshot(),
                 "maxGoals",
-                settings.agent().maxGoals());
+                settings.agent().maxGoals(),
+                "hostSurvival",
+                JsonSupport.of(
+                        "autoResumeAfterDeath",
+                        settings.survival().autoResumeAfterDeath(),
+                        "hostThreatPolicy",
+                        settings.survival().hostThreatPolicy(),
+                        "deathResumes",
+                        stats.deathResumes,
+                        "maxDeathResumes",
+                        settings.survival().maxDeathResumes()));
     }
 
     private static String check(JsonObject goal, JsonObject snapshot) {
@@ -811,10 +965,16 @@ public final class AgentController implements AutoCloseable {
 
     private record GoalResult(boolean replan, String summary, JsonObject snapshot) {}
 
+    /** Per-command death resume. One open death counts once until a living snapshot returns. */
+    private static final class Life {
+        boolean deathOpen;
+        JsonObject lastLiving;
+    }
+
     private final class ExecutionStats {
         final long owner;
         final String commandId;
-        volatile int llmRequests, toolCalls, localSegments;
+        volatile int llmRequests, toolCalls, localSegments, deathResumes;
         final ToolExecutor countedTools =
                 new ToolExecutor() {
                     public JsonArray definitions() {

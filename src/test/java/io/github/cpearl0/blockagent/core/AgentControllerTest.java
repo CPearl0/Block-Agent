@@ -2,6 +2,7 @@ package io.github.cpearl0.blockagent.core;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -32,8 +33,10 @@ class AgentControllerTest {
     private static final class FakeTools implements ToolExecutor {
         final AtomicInteger actions = new AtomicInteger(),
                 dispatches = new AtomicInteger(),
-                menuReads = new AtomicInteger();
+                menuReads = new AtomicInteger(),
+                deathActions = new AtomicInteger();
         final AtomicLong observations = new AtomicLong();
+        final AtomicBoolean stayDead = new AtomicBoolean();
         final AtomicReference<CompletableFuture<JsonObject>> pending = new AtomicReference<>();
 
         public JsonArray definitions() {
@@ -55,6 +58,15 @@ class AgentControllerTest {
             dispatches.incrementAndGet();
             token.throwIfCancelled();
             if (name.equals("observe")) {
+                if (stayDead.get())
+                    return CompletableFuture.completedFuture(
+                            JsonSupport.of(
+                                    "ok",
+                                    false,
+                                    "code",
+                                    "player_dead",
+                                    "message",
+                                    "Player is dead"));
                 long clock = observations.incrementAndGet();
                 return CompletableFuture.completedFuture(
                         JsonSupport.of(
@@ -129,6 +141,11 @@ class AgentControllerTest {
                 token.onCancel(() -> f.completeExceptionally(new CancellationException()));
                 return f;
             }
+            if (name.equals("generic_action")
+                    && deathActions.getAndUpdate(value -> value > 0 ? value - 1 : 0) > 0)
+                return CompletableFuture.completedFuture(
+                        JsonSupport.of(
+                                "ok", false, "code", "player_dead", "message", "Player is dead"));
             actions.incrementAndGet();
             return CompletableFuture.completedFuture(
                     JsonSupport.of(
@@ -544,6 +561,198 @@ class AgentControllerTest {
         }
     }
 
+    @Test
+    void deathRespawnContinuesTheSameGoal() throws Exception {
+        FakeTools tools = new FakeTools();
+        tools.deathActions.set(1);
+        AtomicInteger programs = new AtomicInteger();
+        AtomicBoolean resumedContext = new AtomicBoolean();
+        HttpServer server =
+                server(
+                        (system, input) -> {
+                            if (system.contains("Produce JSON"))
+                                return JsonSupport.of(
+                                        "goals",
+                                        List.of(
+                                                JsonSupport.of(
+                                                        "objective",
+                                                        "produce two verified parts",
+                                                        "checks",
+                                                        List.of(
+                                                                JsonSupport.of(
+                                                                        "path",
+                                                                        "inventory.test:part",
+                                                                        "op",
+                                                                        "gte",
+                                                                        "value",
+                                                                        2)))));
+                            if (system.contains("Return {\"program\"")) {
+                                programs.incrementAndGet();
+                                if (input.getAsJsonObject("hostSurvival")
+                                                .get("deathResumes")
+                                                .getAsInt()
+                                        >= 1) resumedContext.set(true);
+                                assertTrue(
+                                        input.getAsJsonObject("hostSurvival")
+                                                .get("autoResumeAfterDeath")
+                                                .getAsBoolean());
+                                return JsonParser.parseString(
+                                                """
+                        {"program":[{"op":"call","tool":"generic_action"},
+                         {"op":"call","tool":"generic_action"},
+                         {"op":"return","value":{"status":"done","summary":"two actions"}}]}
+                        """)
+                                        .getAsJsonObject();
+                            }
+                            return JsonSupport.of(
+                                    "status",
+                                    "complete",
+                                    "summary",
+                                    "parts remain after respawn",
+                                    "requirements",
+                                    List.of(
+                                            JsonSupport.of(
+                                                    "requirement",
+                                                    "two parts",
+                                                    "satisfied",
+                                                    true,
+                                                    "evidence",
+                                                    "inventory after the same goal resumed")));
+                        });
+        try (AgentController controller =
+                new AgentController(
+                        providerConfig(server, null, null),
+                        directory.resolve("memory"),
+                        tools,
+                        s -> {})) {
+            assertTrue(controller.survival().autoResumeAfterDeath());
+            assertTrue(controller.survival().hostThreatPolicy());
+            controller.submit("produce two test:part items after a death");
+            await(() -> controller.status().get("state").getAsString().equals("completed"));
+            JsonObject status = controller.status();
+            assertEquals(
+                    "succeeded", status.getAsJsonObject("lastResult").get("outcome").getAsString());
+            assertEquals(1, status.get("deathResumes").getAsInt());
+            assertEquals(2, tools.actions.get());
+            assertEquals(2, programs.get());
+            assertTrue(resumedContext.get(), "the same goal must see the death resume count");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void disabledAutoResumeEndsTheEpisode() throws Exception {
+        FakeTools tools = new FakeTools();
+        tools.deathActions.set(1);
+        HttpServer server =
+                server(
+                        (system, input) -> {
+                            if (system.contains("Produce JSON"))
+                                return JsonSupport.of(
+                                        "goals",
+                                        List.of(JsonSupport.of("objective", "keep working")));
+                            if (system.contains("Return {\"program\""))
+                                return JsonParser.parseString(
+                                                """
+                        {"program":[{"op":"call","tool":"generic_action"},
+                         {"op":"return","value":{"status":"done","summary":"should not finish"}}]}
+                        """)
+                                        .getAsJsonObject();
+                            return JsonSupport.of(
+                                    "status", "incomplete", "summary", "not reviewed");
+                        });
+        try (AgentController controller =
+                new AgentController(
+                        providerConfig(server, false, null),
+                        directory.resolve("memory"),
+                        tools,
+                        s -> {})) {
+            assertFalse(controller.survival().autoResumeAfterDeath());
+            controller.submit("do not resume after death");
+            await(() -> controller.status().get("state").getAsString().equals("failed"));
+            JsonObject status = controller.status();
+            assertEquals(
+                    "failed", status.getAsJsonObject("lastResult").get("outcome").getAsString());
+            assertTrue(
+                    status.getAsJsonObject("lastResult")
+                            .get("summary")
+                            .getAsString()
+                            .contains("autoResumeAfterDeath"));
+            assertEquals(0, status.get("deathResumes").getAsInt());
+            assertEquals(0, tools.actions.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void repeatedDeathHonorsResumeLimit() throws Exception {
+        FakeTools tools = new FakeTools();
+        tools.deathActions.set(5);
+        HttpServer server =
+                server(
+                        (system, input) -> {
+                            if (system.contains("Produce JSON"))
+                                return JsonSupport.of(
+                                        "goals", List.of(JsonSupport.of("objective", "survive")));
+                            return JsonParser.parseString(
+                                            """
+                    {"program":[{"op":"call","tool":"generic_action"},
+                     {"op":"return","value":{"status":"done","summary":"action"}}]}
+                    """)
+                                    .getAsJsonObject();
+                        });
+        try (AgentController controller =
+                new AgentController(
+                        providerConfig(server, true, 1),
+                        directory.resolve("memory"),
+                        tools,
+                        s -> {})) {
+            controller.submit("stop after the configured number of deaths");
+            await(() -> controller.status().get("state").getAsString().equals("failed"));
+            JsonObject status = controller.status();
+            assertEquals(
+                    "failed", status.getAsJsonObject("lastResult").get("outcome").getAsString());
+            assertTrue(
+                    status.getAsJsonObject("lastResult")
+                            .get("summary")
+                            .getAsString()
+                            .contains("Death resume limit"));
+            assertEquals(2, status.get("deathResumes").getAsInt());
+            assertEquals(0, tools.actions.get());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void stopDuringRespawnStillCancels() throws Exception {
+        FakeTools tools = new FakeTools();
+        tools.stayDead.set(true);
+        try (AgentController controller =
+                new AgentController(
+                        providerConfig(null, true, null),
+                        directory.resolve("memory"),
+                        tools,
+                        s -> {})) {
+            controller.submit("respawn and continue");
+            await(() -> controller.status().get("state").getAsString().equals("respawning"));
+            controller.stop();
+            await(
+                    () -> {
+                        JsonObject status = controller.status();
+                        if (!status.has("lastResult")) return false;
+                        String state = status.get("state").getAsString();
+                        String outcome =
+                                status.getAsJsonObject("lastResult").get("outcome").getAsString();
+                        return outcome.equals("cancelled")
+                                && (state.equals("stopped") || state.equals("cancelled"));
+                    });
+            assertEquals(0, tools.actions.get());
+        }
+    }
+
     private interface Handler {
         JsonObject respond(String system, JsonObject input);
     }
@@ -595,6 +804,35 @@ class AgentControllerTest {
                 });
         server.start();
         return server;
+    }
+
+    private Path providerConfig(HttpServer server, Boolean autoResume, Integer maxDeaths)
+            throws Exception {
+        JsonObject root =
+                JsonSupport.of(
+                        "provider",
+                        JsonSupport.of(
+                                "baseUrl",
+                                server == null
+                                        ? "http://127.0.0.1:9/v1"
+                                        : "http://127.0.0.1:"
+                                                + server.getAddress().getPort()
+                                                + "/v1",
+                                "apiKey",
+                                "",
+                                "model",
+                                "fixture-model",
+                                "apiType",
+                                "openai-chat"));
+        if (autoResume != null || maxDeaths != null) {
+            JsonObject survival = new JsonObject();
+            if (autoResume != null) survival.addProperty("autoResumeAfterDeath", autoResume);
+            if (maxDeaths != null) survival.addProperty("maxDeathResumes", maxDeaths);
+            root.add("survival", survival);
+        }
+        Path file = directory.resolve("survival-" + System.nanoTime() + ".json");
+        JsonSupport.writeAtomic(file, root);
+        return file;
     }
 
     private Path configuration(HttpServer server) throws Exception {
