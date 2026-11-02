@@ -270,6 +270,10 @@ public final class ProgramInterpreter {
                             "completedAtMs",
                             System.currentTimeMillis()));
             if (!result.get("ok").getAsBoolean()) {
+                // Death invalidates the segment's inventory and position. allowFailure must not
+                // turn it into another loop iteration while the player is still dead.
+                if (JsonSupport.string(result, "code", "").equals("player_dead"))
+                    throw new ToolFailure(name, result);
                 String key =
                         name
                                 + args
