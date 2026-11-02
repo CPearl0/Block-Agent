@@ -53,11 +53,11 @@ class EvidenceLogTest {
         assertEquals(3, log.knowledgeRevision(), "inventory change remains knowledge");
         JsonArray after = log.snapshot().getAsJsonArray("entries");
         assertEquals(
-                2, after.size(), "historical observe omits inventory, so the prompt coalesces");
-        assertEquals(2, after.get(1).getAsJsonObject().get("repeats").getAsInt());
+                3, after.size(), "inventory counts stay in the prompt, so they do not coalesce");
+        assertTrue(after.get(2).getAsJsonObject().toString().contains("minecraft:diamond"));
         log.add(observe(6, 14.2, true, 4));
         assertEquals(4, log.knowledgeRevision());
-        assertEquals(3, log.snapshot().getAsJsonArray("entries").size());
+        assertEquals(4, log.snapshot().getAsJsonArray("entries").size());
     }
 
     @Test
@@ -68,10 +68,35 @@ class EvidenceLogTest {
         JsonObject entry = log.snapshot().getAsJsonArray("entries").get(0).getAsJsonObject();
         assertEquals(4, entry.get("repeats").getAsInt());
         assertEquals("inspect_inventory_window", entry.get("tool").getAsString());
+        JsonObject outcome = entry.getAsJsonObject("outcome");
+        assertEquals(4, outcome.get("windowId").getAsInt());
+        assertEquals(4, outcome.get("stateId").getAsInt());
         String text = log.snapshot().toString();
         assertTrue(text.contains("test:part"));
-        assertFalse(text.contains("windowId"));
         assertFalse(text.contains("synchronizedAtMs"));
+        assertFalse(text.contains("ChestMenu"));
+    }
+
+    @Test
+    void furnaceLayoutAndLatestHandlesStayInThePrompt() {
+        EvidenceLog log = new EvidenceLog(131072, 20480);
+        log.add(furnace(1, 10, false));
+        log.add(furnace(2, 11, false));
+        log.add(dig(1, true));
+        log.add(furnace(3, 12, true));
+        JsonArray entries = log.snapshot().getAsJsonArray("entries");
+        assertEquals(3, entries.size());
+        JsonObject first = entries.get(0).getAsJsonObject().getAsJsonObject("outcome");
+        assertFalse(first.has("windowId"));
+        assertFalse(first.has("stateId"));
+        assertTrue(first.toString().contains("FurnaceFuelSlot"));
+        assertTrue(first.toString().contains("\"empty\":true"));
+        JsonObject latest = entries.get(2).getAsJsonObject().getAsJsonObject("outcome");
+        assertEquals(3, latest.get("windowId").getAsInt());
+        assertEquals(12, latest.get("stateId").getAsInt());
+        assertTrue(latest.toString().contains("minecraft:raw_iron"));
+        assertTrue(latest.toString().contains("FurnaceResultSlot"));
+        assertEquals(3, log.knowledgeRevision());
     }
 
     @Test
@@ -308,6 +333,52 @@ class EvidenceLogTest {
                 ok ? "" : "unreachable",
                 ok ? "Target removed after server acknowledgement" : "Could not reach block",
                 data);
+    }
+
+    private static JsonObject furnace(int windowId, int stateId, boolean withOre) {
+        java.util.List<JsonObject> slots =
+                java.util.List.of(
+                        furnaceSlot(0, "net.minecraft.world.inventory.Slot", withOre),
+                        furnaceSlot(1, "net.minecraft.world.inventory.FurnaceFuelSlot", false),
+                        furnaceSlot(2, "net.minecraft.world.inventory.FurnaceResultSlot", false));
+        return receipt(
+                "inspect_inventory_window",
+                new JsonObject(),
+                true,
+                "",
+                "Authoritative native menu contents",
+                JsonSupport.of(
+                        "windowId",
+                        windowId,
+                        "stateId",
+                        stateId,
+                        "synchronizedAtMs",
+                        50_000 + stateId,
+                        "menuType",
+                        "minecraft:furnace",
+                        "menuClass",
+                        "net.minecraft.world.inventory.FurnaceMenu",
+                        "slots",
+                        slots));
+    }
+
+    private static JsonObject furnaceSlot(int index, String slotClass, boolean ore) {
+        JsonObject slot =
+                JsonSupport.of(
+                        "index",
+                        index,
+                        "region",
+                        "container",
+                        "slotClass",
+                        slotClass,
+                        "containerClass",
+                        "net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity");
+        if (ore)
+            slot.add(
+                    "item",
+                    JsonSupport.of("name", "minecraft:raw_iron", "count", 3, "displayName", PAD));
+        else slot.add("item", JsonSupport.of("name", "minecraft:air", "count", 0));
+        return slot;
     }
 
     private static JsonObject menu(int revision) {

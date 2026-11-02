@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * Prompt history for one command. Knowledge hashes still see full tool facts so noProgress keeps
@@ -27,7 +28,7 @@ final class EvidenceLog {
     static final int RECENT_ENTRY_LIMIT = 24;
 
     private static final String SCOPE =
-            "Compact chronological projections, not fresh world truth and not full tool payloads. Identical outcomes are coalesced; older receipts are folded into counts, failures, deaths and short highlights. Omitted detail stays unknown. Use currentSnapshot for the live world.";
+            "Compact chronological projections, not fresh world truth and not full tool payloads. Identical outcomes are coalesced; older receipts are folded into counts, failures, deaths and short highlights. Observe entries keep compact inventory counts. The latest menu receipt keeps windowId, stateId and container slots, including empty ones and slot class names. Older menu handles are omitted because stateId goes stale. Omitted detail stays unknown. Use currentSnapshot for the live world.";
 
     private static final Set<String> DROP =
             Set.of(
@@ -112,7 +113,7 @@ final class EvidenceLog {
         JsonObject entry = fitEntry(project(receipt, id));
         String signature = signature(entry);
         if (!signatures.isEmpty() && signature.equals(signatures.peekLast())) {
-            coalesceTail(id);
+            coalesceTail(id, entry);
             return;
         }
         recent.addLast(entry);
@@ -135,6 +136,7 @@ final class EvidenceLog {
         if (summary != null) root.add("summary", summary);
         JsonArray values = new JsonArray();
         for (JsonObject entry : recent) values.add(entry.deepCopy());
+        retainLatestMenuHandles(values);
         root.add("entries", values);
         while (JsonSupport.bytes(root) > budget && values.size() > 1) {
             values.remove(0);
@@ -212,15 +214,49 @@ final class EvidenceLog {
         while (knowledge.size() > 512) knowledge.remove(knowledge.iterator().next());
     }
 
-    private void coalesceTail(long id) {
+    private void coalesceTail(long id, JsonObject incoming) {
         JsonObject tail = recent.peekLast();
         int before = JsonSupport.bytes(tail);
         int repeats = tail.has("repeats") ? tail.get("repeats").getAsInt() + 1 : 2;
         tail.addProperty("repeats", repeats);
         tail.addProperty("lastSequence", id);
+        refreshMenuHandles(tail, incoming);
         recentBytes += JsonSupport.bytes(tail) - before;
         coalescedRepeats++;
         trim();
+    }
+
+    /** Handle churn is not a new outcome, but the prompt must show the newest ids. */
+    private static void refreshMenuHandles(JsonObject tail, JsonObject incoming) {
+        if (!tail.has("outcome") || !tail.get("outcome").isJsonObject()) return;
+        if (!incoming.has("outcome") || !incoming.get("outcome").isJsonObject()) return;
+        JsonObject from = incoming.getAsJsonObject("outcome");
+        JsonObject to = tail.getAsJsonObject("outcome");
+        for (String key : List.of("windowId", "stateId"))
+            if (from.has(key)) to.add(key, from.get(key).deepCopy());
+    }
+
+    private static void retainLatestMenuHandles(JsonArray entries) {
+        int latest = -1;
+        for (int i = 0; i < entries.size(); i++)
+            if (isMenuTool(entries.get(i).getAsJsonObject())) latest = i;
+        for (int i = 0; i < entries.size(); i++) {
+            if (i == latest) continue;
+            JsonObject entry = entries.get(i).getAsJsonObject();
+            if (!isMenuTool(entry) || !entry.has("outcome") || !entry.get("outcome").isJsonObject())
+                continue;
+            JsonObject outcome = entry.getAsJsonObject("outcome");
+            outcome.remove("windowId");
+            outcome.remove("stateId");
+        }
+    }
+
+    private static boolean isMenuTool(JsonObject entry) {
+        String tool = entry.get("tool").getAsString();
+        return tool.equals("inspect_inventory_window")
+                || tool.equals("transfer_inventory_slot")
+                || tool.equals("craft_item")
+                || tool.equals("close_inventory_window");
     }
 
     private void trim() {
@@ -427,6 +463,30 @@ final class EvidenceLog {
             String name = text(data.getAsJsonObject("headBlock"), "name");
             if (name != null && !name.isBlank()) out.addProperty("headBlock", name);
         }
+        if (data.has("inventory") && data.get("inventory").isJsonArray()) {
+            TreeMap<String, Long> counts = new TreeMap<>();
+            for (JsonElement value : data.getAsJsonArray("inventory")) {
+                if (!value.isJsonObject()) continue;
+                JsonObject item = compactItem(value.getAsJsonObject());
+                if (item == null) continue;
+                counts.merge(
+                        item.get("name").getAsString(), item.get("count").getAsLong(), Long::sum);
+            }
+            JsonArray inventory = new JsonArray();
+            int omitted = 0;
+            for (var stack : counts.entrySet()) {
+                if (inventory.size() >= 16) {
+                    omitted++;
+                    continue;
+                }
+                JsonObject row = new JsonObject();
+                row.addProperty("name", stack.getKey());
+                row.addProperty("count", stack.getValue());
+                inventory.add(row);
+            }
+            if (!inventory.isEmpty()) out.add("inventory", inventory);
+            if (omitted > 0) out.addProperty("omittedItems", omitted);
+        }
         if (data.has("nearbyBlocks") && data.get("nearbyBlocks").isJsonArray()) {
             List<JsonObject> blocks = new ArrayList<>();
             for (JsonElement value : data.getAsJsonArray("nearbyBlocks"))
@@ -582,6 +642,8 @@ final class EvidenceLog {
     private static JsonObject projectMenu(JsonObject data) {
         JsonObject out = new JsonObject();
         copyString(data, out, "menuType");
+        copyNumber(data, out, "windowId");
+        copyNumber(data, out, "stateId");
         copyString(data, out, "recipeId");
         copyString(data, out, "itemName");
         copyString(data, out, "confirmedBy");
@@ -598,25 +660,30 @@ final class EvidenceLog {
         if (data.has("slots") && data.get("slots").isJsonArray()) {
             List<JsonObject> container = new ArrayList<>();
             List<JsonObject> player = new ArrayList<>();
+            int omittedEmpty = 0;
             for (JsonElement value : data.getAsJsonArray("slots")) {
                 if (!value.isJsonObject()) continue;
                 JsonObject slot = value.getAsJsonObject();
+                String region = text(slot, "region");
                 JsonObject item =
                         slot.has("item") && slot.get("item").isJsonObject()
                                 ? compactItem(slot.getAsJsonObject("item"))
                                 : null;
-                if (item == null) continue;
-                JsonObject row = new JsonObject();
-                if (hasNumber(slot, "index")) row.add("index", slot.get("index").deepCopy());
-                String region = text(slot, "region");
-                if (region != null) row.addProperty("region", region);
-                row.addProperty("name", item.get("name").getAsString());
-                row.add("count", item.get("count").deepCopy());
+                if (item == null) {
+                    if (!"container".equals(region)) continue;
+                    if (container.size() >= 12) {
+                        omittedEmpty++;
+                        continue;
+                    }
+                    container.add(slotRow(slot, region, null));
+                    continue;
+                }
+                JsonObject row = slotRow(slot, region, item);
                 if ("container".equals(region)) container.add(row);
                 else player.add(row);
             }
             JsonArray slots = new JsonArray();
-            int omitted = 0;
+            int omitted = omittedEmpty;
             for (JsonObject row : container) {
                 if (slots.size() >= 16) omitted++;
                 else slots.add(row);
@@ -639,6 +706,30 @@ final class EvidenceLog {
         copyString(data, out, "resume");
         copyPosition(data, out, "lastLivingPosition");
         return out;
+    }
+
+    private static JsonObject slotRow(JsonObject slot, String region, JsonObject item) {
+        JsonObject row = new JsonObject();
+        if (hasNumber(slot, "index")) row.add("index", slot.get("index").deepCopy());
+        if (region != null) row.addProperty("region", region);
+        if ("container".equals(region)) {
+            String kind = containerSlotKind(slot);
+            if (kind != null) row.addProperty("slot", kind);
+        }
+        if (item == null) row.addProperty("empty", true);
+        else {
+            row.addProperty("name", item.get("name").getAsString());
+            row.add("count", item.get("count").deepCopy());
+        }
+        return row;
+    }
+
+    private static String containerSlotKind(JsonObject slot) {
+        String cls = text(slot, "slotClass");
+        if (cls == null || cls.isBlank()) return null;
+        int dot = cls.lastIndexOf('.');
+        String simple = dot < 0 ? cls : cls.substring(dot + 1);
+        return simple.equals("Slot") ? null : simple;
     }
 
     private static JsonObject compactItem(JsonObject item) {
@@ -785,6 +876,14 @@ final class EvidenceLog {
     }
 
     private static String signature(JsonObject entry) {
+        JsonElement outcome = entry.get("outcome");
+        if (outcome != null && outcome.isJsonObject()) {
+            JsonObject copy = outcome.getAsJsonObject().deepCopy();
+            copy.remove("windowId");
+            copy.remove("stateId");
+            copy.remove("synchronizedAtMs");
+            outcome = copy;
+        }
         return sha256(
                 entry.get("tool")
                         + "|"
@@ -796,7 +895,7 @@ final class EvidenceLog {
                         + "|"
                         + entry.get("args")
                         + "|"
-                        + entry.get("outcome"));
+                        + outcome);
     }
 
     private static String sha256(String raw) {
