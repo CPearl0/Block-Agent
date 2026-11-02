@@ -63,7 +63,10 @@ public final class BotControl {
             return;
         }
         if (owned && !samePlayer(mc)) {
-            if (resumableHere(mc) && mc.player.isAlive()) adopt(mc);
+            // Keep ownership across a same-dimension auto-resume death so a transient
+            // DeathScreen/respawn overlay cannot hit the !owned stop path.
+            if (mc.player != null && !mc.player.isAlive() && autoRespawn(mc)) return;
+            if (resumableHere(mc) && mc.player != null && mc.player.isAlive()) adopt(mc);
             else if (resumableHere(mc)) {
                 release(false);
                 return;
@@ -74,7 +77,10 @@ public final class BotControl {
             }
         }
         if (!running || mc.player == null || mc.level == null || !mc.player.isAlive()) {
-            if (owned) release(true);
+            if (owned) {
+                if (running && mc.player != null && !mc.player.isAlive() && autoRespawn(mc)) return;
+                release(true);
+            }
             return;
         }
         if (!owned) {
