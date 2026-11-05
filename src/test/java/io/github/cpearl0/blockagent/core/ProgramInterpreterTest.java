@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 
 class ProgramInterpreterTest {
     private static final BotConfig.Agent LIMITS =
-            new BotConfig.Agent(10000, 1000, 12, 2, 4, 20, 5, 2000, 100, 8192);
+            new BotConfig.Agent(10000, 1000, 12, 2, 4, 20, 5, 2000, 100, 8192, 20480);
 
     private static JsonArray program(String text) {
         return JsonParser.parseString(text).getAsJsonArray();

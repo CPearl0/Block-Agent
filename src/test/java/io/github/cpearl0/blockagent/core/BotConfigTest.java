@@ -57,4 +57,49 @@ class BotConfigTest {
         assertFalse(disabled.survival().hostThreatPolicy());
         assertEquals(2, disabled.survival().maxDeathResumes());
     }
+
+    @Test
+    void renderedEvidenceBytesDefaultsWithoutRewritingExistingFiles() throws Exception {
+        Path created = directory.resolve("fresh.json");
+        BotConfig fresh = BotConfig.load(created);
+        assertEquals(131072, fresh.agent().maxEvidenceBytes());
+        assertEquals(
+                BotConfig.Agent.DEFAULT_RENDERED_EVIDENCE_BYTES,
+                fresh.agent().renderedEvidenceBytes());
+        assertEquals(
+                BotConfig.Agent.DEFAULT_RENDERED_EVIDENCE_BYTES,
+                JsonSupport.readObject(created, 100_000)
+                        .getAsJsonObject("agent")
+                        .get("renderedEvidenceBytes")
+                        .getAsInt());
+        assertTrue(fresh.survival().autoResumeAfterDeath());
+        assertTrue(fresh.survival().hostThreatPolicy());
+        assertEquals(8, fresh.survival().maxDeathResumes());
+
+        Path existing = directory.resolve("legacy-agent.json");
+        byte[] body =
+                """
+                {"provider":{"baseUrl":"http://127.0.0.1/v1","model":"m"},"agent":{"maxEvidenceBytes":131072},"survival":{"autoResumeAfterDeath":true,"hostThreatPolicy":true,"maxDeathResumes":8}}
+                """
+                        .stripIndent()
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Files.write(existing, body);
+        BotConfig legacy = BotConfig.load(existing);
+        assertEquals(131072, legacy.agent().maxEvidenceBytes());
+        assertEquals(
+                BotConfig.Agent.DEFAULT_RENDERED_EVIDENCE_BYTES,
+                legacy.agent().renderedEvidenceBytes());
+        assertTrue(legacy.survival().autoResumeAfterDeath());
+        assertTrue(legacy.survival().hostThreatPolicy());
+        assertEquals(8, legacy.survival().maxDeathResumes());
+        assertArrayEquals(body, Files.readAllBytes(existing));
+
+        Path tuned = directory.resolve("tuned.json");
+        JsonSupport.writeAtomic(
+                tuned, JsonSupport.of("agent", JsonSupport.of("renderedEvidenceBytes", 12288)));
+        BotConfig explicit = BotConfig.load(tuned);
+        assertEquals(12288, explicit.agent().renderedEvidenceBytes());
+        assertEquals(131072, explicit.agent().maxEvidenceBytes());
+        assertTrue(explicit.survival().hostThreatPolicy());
+    }
 }

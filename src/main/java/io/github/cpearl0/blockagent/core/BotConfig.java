@@ -55,6 +55,12 @@ public record BotConfig(
         }
     }
 
+    /**
+     * {@code maxEvidenceBytes} is the hard ceiling for one command's evidence log. {@code
+     * renderedEvidenceBytes} caps the compact historicalEvidence object placed in each model prompt
+     * (recent projected receipts plus a folded summary). It does not grow to fill {@code
+     * maxEvidenceBytes}. Missing keys use these defaults; an existing file is not rewritten.
+     */
     public record Agent(
             long commandTimeoutMs,
             long actionTimeoutMs,
@@ -65,7 +71,10 @@ public record BotConfig(
             int maxToolCallsPerSegment,
             int maxInstructionsPerSegment,
             int maxLoopIterations,
-            int maxEvidenceBytes) {}
+            int maxEvidenceBytes,
+            int renderedEvidenceBytes) {
+        public static final int DEFAULT_RENDERED_EVIDENCE_BYTES = 20480;
+    }
 
     public record Autonomy(boolean enabled, long decisionIntervalMs, long taskTimeoutMs) {}
 
@@ -122,7 +131,13 @@ public record BotConfig(
                         n(a, "maxToolCallsPerSegment", 100, 1, 500),
                         n(a, "maxInstructionsPerSegment", 20_000, 100, 100_000),
                         n(a, "maxLoopIterations", 4096, 1, 20_000),
-                        n(a, "maxEvidenceBytes", 131072, 8192, 262144));
+                        n(a, "maxEvidenceBytes", 131072, 8192, 262144),
+                        n(
+                                a,
+                                "renderedEvidenceBytes",
+                                Agent.DEFAULT_RENDERED_EVIDENCE_BYTES,
+                                4096,
+                                65536));
         return new BotConfig(
                 provider,
                 agent,
@@ -186,7 +201,9 @@ public record BotConfig(
                         "maxLoopIterations",
                         4096,
                         "maxEvidenceBytes",
-                        131072),
+                        131072,
+                        "renderedEvidenceBytes",
+                        Agent.DEFAULT_RENDERED_EVIDENCE_BYTES),
                 "autonomy",
                 JsonSupport.of(
                         "enabled", false, "decisionIntervalMs", 60000, "taskTimeoutMs", 600000),

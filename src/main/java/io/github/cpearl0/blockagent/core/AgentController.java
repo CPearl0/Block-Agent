@@ -7,11 +7,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HexFormat;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -186,7 +181,10 @@ public final class AgentController implements AutoCloseable {
             ExecutionStats stats) {
         String projectId = null, summary = "", outcome = "failed";
         boolean accepted = false;
-        Evidence evidence = new Evidence(settings.agent().maxEvidenceBytes());
+        EvidenceLog evidence =
+                new EvidenceLog(
+                        settings.agent().maxEvidenceBytes(),
+                        settings.agent().renderedEvidenceBytes());
         Life life = new Life();
         try (LlmClient llm = new LlmClient(settings.provider(), line -> say(owner, line))) {
             assertCurrent(owner, token);
@@ -394,7 +392,7 @@ public final class AgentController implements AutoCloseable {
             LlmClient llm,
             JsonObject initial,
             JsonObject initialSnapshot,
-            Evidence evidence,
+            EvidenceLog evidence,
             JsonObject project,
             ExecutionStats stats,
             Life life)
@@ -484,7 +482,7 @@ public final class AgentController implements AutoCloseable {
                 requireSameWorld(initial, snapshot);
                 String status = JsonSupport.string(result, "status", "");
                 boolean progress =
-                        !stableSnapshot(before).equals(stableSnapshot(snapshot))
+                        !EvidenceLog.stableFacts(before).equals(EvidenceLog.stableFacts(snapshot))
                                 || evidence.knowledgeRevision() != beforeKnowledge;
                 if (status.equals("done")) {
                     String failed = check(goal, snapshot);
@@ -550,7 +548,7 @@ public final class AgentController implements AutoCloseable {
                         observe(owner, token, evidence, settings, stats, life, command, commandId);
                 requireSameWorld(initial, snapshot);
                 boolean progress =
-                        !stableSnapshot(before).equals(stableSnapshot(snapshot))
+                        !EvidenceLog.stableFacts(before).equals(EvidenceLog.stableFacts(snapshot))
                                 || evidence.knowledgeRevision() != beforeKnowledge;
                 noProgress = progress ? 0 : noProgress + 1;
                 if (noProgress >= 2)
@@ -568,7 +566,7 @@ public final class AgentController implements AutoCloseable {
     private JsonObject observe(
             long owner,
             CancellationToken token,
-            Evidence evidence,
+            EvidenceLog evidence,
             BotConfig settings,
             ExecutionStats stats,
             Life life,
@@ -594,7 +592,7 @@ public final class AgentController implements AutoCloseable {
     private JsonObject resumeAfterDeath(
             long owner,
             CancellationToken token,
-            Evidence evidence,
+            EvidenceLog evidence,
             BotConfig settings,
             ExecutionStats stats,
             Life life,
@@ -640,7 +638,7 @@ public final class AgentController implements AutoCloseable {
     private JsonObject observeOnce(
             long owner,
             CancellationToken token,
-            Evidence evidence,
+            EvidenceLog evidence,
             BotConfig settings,
             ExecutionStats stats)
             throws Exception {
@@ -727,7 +725,7 @@ public final class AgentController implements AutoCloseable {
             long started,
             JsonObject initial,
             JsonObject snapshot,
-            Evidence evidence,
+            EvidenceLog evidence,
             BotConfig settings,
             ExecutionStats stats) {
         return JsonSupport.of(
@@ -894,51 +892,6 @@ public final class AgentController implements AutoCloseable {
                 : server + "|" + dimension;
     }
 
-    /**
-     * Clock passage, sub-block idle jitter and a known mob walking around are not task progress.
-     * This projection is ONLY a liveness signal; full unmodified observations remain review
-     * evidence.
-     */
-    private static JsonObject stableSnapshot(JsonObject snapshot) {
-        JsonObject stable = snapshot.deepCopy();
-        for (String key :
-                List.of(
-                        "gameTime",
-                        "dayTime",
-                        "timeOfDay",
-                        "timestamp",
-                        "observedAtMs",
-                        "completedAtMs",
-                        "elapsedTimeMs",
-                        "menuId")) stable.remove(key);
-        if (stable.has("position") && stable.get("position").isJsonObject()) {
-            JsonObject position = stable.getAsJsonObject("position");
-            for (String axis : List.of("x", "y", "z"))
-                if (position.has(axis)
-                        && position.get(axis).isJsonPrimitive()
-                        && position.getAsJsonPrimitive(axis).isNumber())
-                    position.addProperty(axis, Math.floor(position.get(axis).getAsDouble()));
-        }
-        if (stable.has("nearbyEntities") && stable.get("nearbyEntities").isJsonArray()) {
-            List<JsonObject> identities = new ArrayList<>();
-            for (JsonElement value : stable.getAsJsonArray("nearbyEntities"))
-                if (value.isJsonObject()) {
-                    JsonObject entity = value.getAsJsonObject().deepCopy();
-                    entity.remove("position");
-                    entity.remove("distance");
-                    entity.remove("ageMs");
-                    identities.add(entity);
-                }
-            identities.sort(Comparator.comparing(JsonObject::toString));
-            JsonArray entities = new JsonArray();
-            identities.forEach(entities::add);
-            stable.add("nearbyEntities", entities);
-        }
-        if (stable.has("recentDamage") && stable.get("recentDamage").isJsonObject())
-            stable.getAsJsonObject("recentDamage").remove("ageMs");
-        return stable;
-    }
-
     private static JsonArray requireArray(JsonObject o, String key) {
         if (!o.has(key) || !o.get(key).isJsonArray())
             throw new IllegalArgumentException("Missing array: " + key);
@@ -996,101 +949,6 @@ public final class AgentController implements AutoCloseable {
         ExecutionStats(long owner, String commandId) {
             this.owner = owner;
             this.commandId = commandId;
-        }
-    }
-
-    private static final class Evidence {
-        private final int maxBytes;
-        private final ArrayDeque<JsonObject> entries = new ArrayDeque<>();
-        private final LinkedHashSet<String> knowledge = new LinkedHashSet<>();
-        private int bytes, omitted;
-        private long sequence, knowledgeRevision;
-
-        Evidence(int maxBytes) {
-            this.maxBytes = maxBytes;
-        }
-
-        void add(JsonObject receipt) {
-            int entryLimit = Math.min(maxBytes, 16384);
-            JsonObject entry =
-                    JsonSupport.of(
-                            "tool",
-                            receipt.get("tool"),
-                            "sequence",
-                            ++sequence,
-                            "completedAtMs",
-                            receipt.get("completedAtMs"));
-            entry.add(
-                    "args",
-                    JsonSupport.bounded(receipt.get("args"), Math.min(4096, entryLimit / 4)));
-            entry.add(
-                    "result",
-                    JsonSupport.bounded(
-                            receipt.get("result"),
-                            Math.max(512, entryLimit - JsonSupport.bytes(entry) - 512)));
-            int size = JsonSupport.bytes(entry);
-            while (!entries.isEmpty() && (entries.size() >= 512 || bytes + size > maxBytes)) {
-                bytes -= JsonSupport.bytes(entries.removeFirst());
-                omitted++;
-            }
-            entries.add(entry);
-            bytes += size;
-            String tool = receipt.get("tool").getAsString();
-            JsonObject result = receipt.getAsJsonObject("result");
-            if (tool.equals("wait")
-                    || tool.equals("chat")
-                    || !JsonSupport.bool(result, "ok", false)
-                    || !result.has("data")) return;
-            JsonElement facts = result.get("data").deepCopy();
-            if (tool.equals("observe") && facts.isJsonObject())
-                facts = stableSnapshot(facts.getAsJsonObject());
-            else if (facts.isJsonObject())
-                for (String key :
-                        List.of(
-                                "elapsedMs",
-                                "elapsedTimeMs",
-                                "completedAtMs",
-                                "startedAtMs",
-                                "durationMs",
-                                "latencyMs")) facts.getAsJsonObject().remove(key);
-            if ((tool.equals("inspect_inventory_window") || tool.equals("transfer_inventory_slot"))
-                    && facts.isJsonObject())
-                for (String key : List.of("windowId", "stateId", "synchronizedAtMs"))
-                    facts.getAsJsonObject().remove(key);
-            String raw = tool + "|" + receipt.get("args") + "|" + facts;
-            String key;
-            try {
-                key =
-                        HexFormat.of()
-                                .formatHex(
-                                        java.security.MessageDigest.getInstance("SHA-256")
-                                                .digest(
-                                                        raw.getBytes(
-                                                                java.nio.charset.StandardCharsets
-                                                                        .UTF_8)));
-            } catch (java.security.NoSuchAlgorithmException ex) {
-                throw new IllegalStateException(ex);
-            }
-            if (knowledge.add(key)) knowledgeRevision++;
-            while (knowledge.size() > 512) knowledge.remove(knowledge.iterator().next());
-        }
-
-        long knowledgeRevision() {
-            return knowledgeRevision;
-        }
-
-        JsonObject snapshot() {
-            JsonArray values = new JsonArray();
-            for (JsonObject entry : entries) values.add(entry.deepCopy());
-            return JsonSupport.of(
-                    "scope",
-                    "Chronological historical receipts, not current world truth; clipped and omitted facts remain unknown",
-                    "omittedOldEntries",
-                    omitted,
-                    "retainedBytes",
-                    bytes,
-                    "entries",
-                    values);
         }
     }
 }
