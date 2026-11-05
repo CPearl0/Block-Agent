@@ -22,17 +22,23 @@ import net.minecraft.world.Container;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.StackedContents;
 import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.AbstractFurnaceMenu;
+import net.minecraft.world.inventory.BlastFurnaceMenu;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.inventory.CraftingMenu;
+import net.minecraft.world.inventory.FurnaceMenu;
 import net.minecraft.world.inventory.InventoryMenu;
 import net.minecraft.world.inventory.RecipeBookMenu;
 import net.minecraft.world.inventory.ResultSlot;
 import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.inventory.SmokerMenu;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.crafting.AbstractCookingRecipe;
 import net.minecraft.world.item.crafting.CraftingInput;
 import net.minecraft.world.item.crafting.CraftingRecipe;
 import net.minecraft.world.item.crafting.RecipeHolder;
 import net.minecraft.world.item.crafting.RecipeType;
+import net.minecraft.world.item.crafting.SingleRecipeInput;
 import net.neoforged.neoforge.items.SlotItemHandler;
 import net.neoforged.neoforge.items.wrapper.InvWrapper;
 import net.neoforged.neoforge.items.wrapper.PlayerMainInvWrapper;
@@ -49,6 +55,7 @@ final class ContainerActions {
             case "inspect_inventory_window" -> new Inspect(mc, args, token);
             case "transfer_inventory_slot" -> new Transfer(mc, args, token);
             case "craft_item" -> new Craft(mc, args, token);
+            case "smelt_item" -> new Smelt(mc, args, token);
             case "close_inventory_window" -> new Close(mc, args, token);
             default ->
                     GameBridge.once(
@@ -76,6 +83,11 @@ final class ContainerActions {
                 "craft_item",
                 "Craft at least count additional units of itemName using an actual synchronized, unlocked ordinary crafting recipe and native recipe-book placement/result clicks. Optional recipeId chooses an exact recipe. Uses current player 2x2 or crafting-table 3x3 menu; position may explicitly open a reachable table. Requires initially empty cursor/grid, available ingredients and output/remainder capacity. Confirms real output inventory growth, returns grid remainders safely, and leaves menu open. No resource gathering, smelting, custom machine processing or special/dynamic recipes. Recipe batch yield may exceed count.",
                 "{\"itemName\":{\"type\":\"string\"},\"count\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":64},\"recipeId\":{\"type\":\"string\"},\"position\":{\"$ref\":\"#/$defs/position\"}}");
+        ToolDefinitions.add(
+                tools,
+                "smelt_item",
+                "Produce at least count additional itemName using native furnace/blast-furnace/smoker clicks and synchronized cooking recipes. Optional fuelItemName selects fuel; otherwise chooses a compatible inventory fuel. Optional position opens a visible reachable furnace. Requires empty cursor, input and output slots; existing fuel is preserved. Feeds one ingredient at a time, waits up to 45 seconds per batch, confirms server output and actual inventory growth. Leaves menu open; failures/cancellation can leave ingredients/fuel in the furnace. No gathering, cheats or commands. Batch yield may exceed count; allow sufficient tool timeout (roughly 15 seconds per ordinary furnace item).",
+                "{\"itemName\":{\"type\":\"string\"},\"count\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":64},\"fuelItemName\":{\"type\":\"string\"},\"position\":{\"$ref\":\"#/$defs/position\"}}");
         ToolDefinitions.add(
                 tools,
                 "close_inventory_window",
@@ -656,6 +668,259 @@ final class ContainerActions {
             data.addProperty("confirmedBy", "server_full_content");
             return GameBridge.ok(
                     "Ordinary recipe output and cleared crafting grid confirmed", data);
+        }
+    }
+
+    /** One input per batch prevents overfeeding and permits exact authoritative accounting. */
+    private static final class Smelt extends Action {
+        final Session session;
+        final JsonObject args;
+        AbstractFurnaceMenu furnace;
+        RecipeType<? extends AbstractCookingRecipe> recipeType;
+        RecipeHolder<? extends AbstractCookingRecipe> recipe;
+        ItemStack output, moving, sourceBefore, destinationBefore;
+        int stage, wanted, destination, source, target, moveStage;
+        SmeltingProgress progress;
+        long batchSince, pollSince;
+
+        Smelt(Minecraft mc, JsonObject args, CancellationToken token) {
+            super(mc, token);
+            session = new Session(mc, args);
+            this.args = args;
+        }
+
+        @Override
+        JsonObject step() {
+            if (!session.ready()) return null;
+            AbstractContainerMenu menu = session.menu;
+            if (stage == 0) {
+                requireEmptyCursor(menu);
+                recipeType =
+                        menu instanceof FurnaceMenu
+                                ? RecipeType.SMELTING
+                                : menu instanceof BlastFurnaceMenu
+                                        ? RecipeType.BLASTING
+                                        : menu instanceof SmokerMenu ? RecipeType.SMOKING : null;
+                if (recipeType == null)
+                    throw new Fault(
+                            "smelting_menu_unsupported",
+                            "Open a native furnace, blast furnace or smoker");
+                furnace = (AbstractFurnaceMenu) menu;
+                if (!menu.getSlot(0).getItem().isEmpty() || !menu.getSlot(2).getItem().isEmpty())
+                    throw new Fault(
+                            "smelting_slots_not_empty",
+                            "Clear existing input/output explicitly before smelting");
+                wanted = WorldData.integer(args, "count", 1, 1, 64);
+                ItemStack requested = item(args, "itemName");
+                if (args.has("fuelItemName")) item(args, "fuelItemName");
+                for (var candidate : level.getRecipeManager().getAllRecipesFor(recipeType)) {
+                    if (candidate.value().isSpecial()
+                            || candidate.value().getResultItem(level.registryAccess()).getItem()
+                                    != requested.getItem()) continue;
+                    if (ingredientSource(candidate) >= 0
+                            && (recipe == null
+                                    || candidate.id().toString().compareTo(recipe.id().toString())
+                                            < 0)) recipe = candidate;
+                }
+                if (recipe == null)
+                    throw new Fault(
+                            "smelting_recipe_unavailable",
+                            "No synchronized matching cooking recipe with available input for this furnace type");
+                output = recipe.value().getResultItem(level.registryAccess()).copy();
+                progress = new SmeltingProgress(inventoryCount(mc, output), wanted);
+                ownedMenu = menu;
+                stage = 1;
+            }
+            if (stage == 1) {
+                requireEmptyCursor(menu);
+                if (!menu.getSlot(0).getItem().isEmpty() || !menu.getSlot(2).getItem().isEmpty())
+                    throw new Fault(
+                            "smelting_slots_changed",
+                            "Furnace input/output changed between batches");
+                if (inventoryDestination(mc, menu, output) < 0)
+                    throw new Fault(
+                            "smelting_inventory_full",
+                            "No player slot can receive a full output batch");
+                source = ingredientSource(recipe);
+                if (source < 0)
+                    throw new Fault(
+                            "smelting_ingredients_missing", "No matching cooking input remains");
+                // Validate fuel availability before moving any input.
+                if (!furnace.isLit() && menu.getSlot(1).getItem().isEmpty() && fuelSource() < 0)
+                    throw new Fault(
+                            "smelting_fuel_missing", "No compatible selected fuel is available");
+                beginMove(source, 0);
+                batchSince = System.nanoTime();
+                stage = 2;
+                return null;
+            }
+            if (stage == 2 || stage == 3) {
+                if (!finishMove()) return null;
+                stage = 4;
+            }
+            if (stage == 4) {
+                requireEmptyCursor(menu);
+                ItemStack result = menu.getSlot(2).getItem();
+                if (!result.isEmpty()) {
+                    if (!same(result, output)
+                            || result.getCount() != output.getCount()
+                            || !menu.getSlot(0).getItem().isEmpty())
+                        throw new Fault(
+                                "smelting_output_mismatch",
+                                "Server furnace output/input differs from the selected batch");
+                    destination = inventoryDestination(mc, menu, output);
+                    if (destination < 0)
+                        throw new Fault("smelting_inventory_full", "Output destination is full");
+                    destinationBefore = menu.getSlot(destination).getItem().copy();
+                    recoverySlot = destination;
+                    ownedCursor = output.copyWithCount(1);
+                    click(session, 2, 0, ClickType.PICKUP);
+                    stage = 5;
+                    return null;
+                }
+                if (System.nanoTime() - batchSince > 45_000_000_000L)
+                    throw new Fault(
+                            "smelting_no_progress",
+                            "No confirmed output within 45 seconds; furnace contents retained");
+                if (!furnace.isLit() && menu.getSlot(1).getItem().isEmpty()) {
+                    int fuel = fuelSource();
+                    if (fuel < 0)
+                        throw new Fault(
+                                "smelting_fuel_missing", "Cooking needs more compatible fuel");
+                    beginMove(fuel, 1);
+                    stage = 3;
+                    return null;
+                }
+                if (System.nanoTime() - pollSince > 500_000_000L) {
+                    pollSince = System.nanoTime();
+                    session.synchronize();
+                }
+                return null;
+            }
+            if (stage == 5) {
+                if (!menu.getSlot(2).getItem().isEmpty())
+                    throw new Fault(
+                            "smelting_output_mismatch",
+                            "Furnace output did not empty after pickup");
+                requireStack(
+                        menu.getCarried(),
+                        output,
+                        output.getCount(),
+                        "Smelted output not confirmed on cursor");
+                if (!ItemStack.matches(destinationBefore, menu.getSlot(destination).getItem())
+                        || !accepts(menu.getSlot(destination), output, output.getCount()))
+                    throw new Fault(
+                            "smelting_destination_changed",
+                            "Output destination changed; preserve cursor for recovery");
+                click(session, destination, 0, ClickType.PICKUP);
+                stage = 6;
+                return null;
+            }
+            requireEmptyCursor(menu);
+            requireStack(
+                    menu.getSlot(destination).getItem(),
+                    output,
+                    destinationBefore.getCount() + output.getCount(),
+                    "Output destination count/components differ");
+            int current = inventoryCount(mc, output);
+            boolean complete;
+            try {
+                complete = progress.confirm(current, output.getCount());
+            } catch (IllegalStateException error) {
+                throw new Fault("smelting_output_unconfirmed", error.getMessage());
+            }
+            if (!complete) {
+                stage = 1;
+                return null;
+            }
+            JsonObject data = snapshot(mc, menu, output);
+            data.addProperty("recipeId", recipe.id().toString());
+            data.addProperty("itemName", WorldData.name(output));
+            data.addProperty("requested", wanted);
+            data.addProperty("produced", progress.produced());
+            data.addProperty("confirmedBy", "server_full_content");
+            return GameBridge.ok("Native cooking output confirmed in player inventory", data);
+        }
+
+        int ingredientSource(RecipeHolder<? extends AbstractCookingRecipe> candidate) {
+            for (int i = 3; i < session.menu.slots.size(); i++) {
+                Slot slot = session.menu.getSlot(i);
+                if (slotBacking(slot).ordinaryPlayer(mc)
+                        && slot.mayPickup(player)
+                        && !slot.getItem().isEmpty()
+                        && candidate.value().matches(new SingleRecipeInput(slot.getItem()), level))
+                    return i;
+            }
+            return -1;
+        }
+
+        int fuelSource() {
+            ItemStack selected = args.has("fuelItemName") ? item(args, "fuelItemName") : null;
+            for (int i = 3; i < session.menu.slots.size(); i++) {
+                Slot slot = session.menu.getSlot(i);
+                ItemStack stack = slot.getItem();
+                if (slotBacking(slot).ordinaryPlayer(mc)
+                        && slot.mayPickup(player)
+                        && !stack.isEmpty()
+                        && (selected == null || stack.getItem() == selected.getItem())
+                        && stack.getBurnTime(recipeType) > 0
+                        && accepts(session.menu.getSlot(1), stack, 1)) return i;
+            }
+            return -1;
+        }
+
+        void beginMove(int from, int to) {
+            requireEmptyCursor(session.menu);
+            source = from;
+            target = to;
+            sourceBefore = session.menu.getSlot(source).getItem().copy();
+            moving = sourceBefore.copyWithCount(1);
+            if (!accepts(session.menu.getSlot(target), moving, 1))
+                throw new Fault(
+                        "smelting_slot_rejected", "Machine slot rejects selected ingredient/fuel");
+            recoverySlot = source;
+            ownedCursor = moving;
+            click(session, source, 0, ClickType.PICKUP);
+            moveStage = 0;
+        }
+
+        boolean finishMove() {
+            AbstractContainerMenu menu = session.menu;
+            if (moveStage == 0) {
+                requireStack(
+                        menu.getCarried(),
+                        moving,
+                        sourceBefore.getCount(),
+                        "Input pickup unconfirmed");
+                if (!menu.getSlot(source).getItem().isEmpty())
+                    throw new Fault("smelting_source_changed", "Input source was not emptied");
+                if (!accepts(menu.getSlot(target), moving, 1))
+                    throw new Fault("smelting_slot_rejected", "Machine destination changed");
+                click(session, target, 1, ClickType.PICKUP);
+                moveStage = 1;
+                return false;
+            }
+            if (moveStage == 1) {
+                requireStack(
+                        menu.getCarried(),
+                        moving,
+                        sourceBefore.getCount() - 1,
+                        "Single input placement unconfirmed");
+                if (!menu.getCarried().isEmpty()) {
+                    if (!menu.getSlot(source).getItem().isEmpty())
+                        throw new Fault("smelting_source_changed", "Remainder source changed");
+                    click(session, source, 0, ClickType.PICKUP);
+                    moveStage = 2;
+                    return false;
+                }
+            }
+            requireEmptyCursor(menu);
+            requireStack(
+                    menu.getSlot(source).getItem(),
+                    moving,
+                    sourceBefore.getCount() - 1,
+                    "Input remainder not confirmed in player inventory");
+            return true;
         }
     }
 

@@ -76,6 +76,7 @@ public final class HostSurvivalPolicy {
                     "inspect_inventory_window",
                     "transfer_inventory_slot",
                     "craft_item",
+                    "smelt_item",
                     "close_inventory_window" ->
                     true;
             default -> false;

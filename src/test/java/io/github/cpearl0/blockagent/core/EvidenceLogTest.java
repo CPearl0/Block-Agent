@@ -100,6 +100,68 @@ class EvidenceLogTest {
     }
 
     @Test
+    void smeltingReceiptsKeepOutputProofAndInvalidateOlderHandles() {
+        EvidenceLog log = new EvidenceLog(131072, 20480);
+        log.add(furnace(1, 10, false));
+        JsonObject data =
+                furnace(1, 11, false).getAsJsonObject("result").getAsJsonObject("data").deepCopy();
+        data.addProperty("itemName", "minecraft:iron_ingot");
+        data.addProperty("recipeId", "minecraft:iron_ingot_from_smelting_raw_iron");
+        data.addProperty("requested", 2);
+        data.addProperty("produced", 2);
+        data.addProperty("confirmedBy", "server_full_content");
+        data.addProperty("unboundedDebug", PAD);
+        log.add(
+                receipt(
+                        "smelt_item",
+                        JsonSupport.of("itemName", "minecraft:iron_ingot", "count", 2),
+                        true,
+                        "",
+                        "Native cooking confirmed",
+                        data));
+        JsonArray entries = log.snapshot().getAsJsonArray("entries");
+        assertFalse(entries.get(0).getAsJsonObject().getAsJsonObject("outcome").has("stateId"));
+        JsonObject outcome = entries.get(1).getAsJsonObject().getAsJsonObject("outcome");
+        assertEquals(11, outcome.get("stateId").getAsInt());
+        assertEquals(2, outcome.get("produced").getAsInt());
+        assertEquals(2, outcome.get("requested").getAsInt());
+        assertEquals("server_full_content", outcome.get("confirmedBy").getAsString());
+        assertTrue(outcome.get("recipeId").getAsString().contains("smelting_raw_iron"));
+        assertTrue(outcome.toString().contains("FurnaceResultSlot"));
+        assertFalse(outcome.has("unboundedDebug"));
+        log.add(furnace(2, 12, false));
+        entries = log.snapshot().getAsJsonArray("entries");
+        assertFalse(entries.get(1).getAsJsonObject().getAsJsonObject("outcome").has("windowId"));
+        assertEquals(
+                2,
+                entries.get(2)
+                        .getAsJsonObject()
+                        .getAsJsonObject("outcome")
+                        .get("windowId")
+                        .getAsInt());
+    }
+
+    @Test
+    void smeltingFailurePreservesFaultAndFurnaceContents() {
+        EvidenceLog log = new EvidenceLog(131072, 20480);
+        JsonObject data =
+                furnace(4, 20, true).getAsJsonObject("result").getAsJsonObject("data").deepCopy();
+        log.add(
+                receipt(
+                        "smelt_item",
+                        JsonSupport.of("itemName", "minecraft:iron_ingot"),
+                        false,
+                        "smelting_fuel_missing",
+                        "Cooking needs more compatible fuel",
+                        data));
+        String text = log.snapshot().toString();
+        assertTrue(text.contains("smelting_fuel_missing"));
+        assertTrue(text.contains("minecraft:raw_iron"));
+        assertTrue(text.contains("FurnaceFuelSlot"));
+        assertFalse(text.contains("\"produced\""));
+    }
+
+    @Test
     void deathAndBlockSearchSurviveTheRecentWindow() {
         EvidenceLog log = new EvidenceLog(131072, 20480);
         log.add(death());
