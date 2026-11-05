@@ -256,6 +256,7 @@ final class EvidenceLog {
         return tool.equals("inspect_inventory_window")
                 || tool.equals("transfer_inventory_slot")
                 || tool.equals("craft_item")
+                || tool.equals("smelt_item")
                 || tool.equals("close_inventory_window");
     }
 
@@ -442,6 +443,7 @@ final class EvidenceLog {
             case "inspect_inventory_window",
                     "transfer_inventory_slot",
                     "craft_item",
+                    "smelt_item",
                     "close_inventory_window" ->
                     projectMenu(object);
             case "host_respawn" -> projectDeath(object);
@@ -927,6 +929,7 @@ final class EvidenceLog {
     private static boolean notable(String tool) {
         return switch (tool) {
             case "craft_item",
+                    "smelt_item",
                     "collect_block",
                     "pickup_items",
                     "place_block",

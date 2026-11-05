@@ -39,6 +39,7 @@ class HostSurvivalPolicyTest {
                 HostSurvivalPolicy.choose(signals(true, 20f, 20, false, 40, false, false, false)));
 
         assertTrue(HostSurvivalPolicy.yieldsToThreat("dig_at"));
+        assertTrue(HostSurvivalPolicy.yieldsToThreat("smelt_item"));
         assertTrue(HostSurvivalPolicy.yieldsToThreat("collect_block"));
         assertTrue(HostSurvivalPolicy.yieldsToThreat("move_to"));
         assertFalse(HostSurvivalPolicy.yieldsToThreat("observe"));
