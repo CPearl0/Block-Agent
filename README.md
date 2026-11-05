@@ -9,7 +9,7 @@ BlockAgent is a Minecraft client-side AI mod that controls the current player to
 ### Installation
 
 1. Install Minecraft 1.21.1 and the corresponding NeoForge version using HMCL or another launcher.
-2. Place `blockagent-neoforge-1.21.1-0.2.0.jar` in the game instance's `mods/` directory.
+2. Place `blockagent-neoforge-1.21.1-0.0.1.jar` in the game instance's `mods/` directory.
 3. Launch the game and configure your LLM service in the generated `config/blockagent-client.json`.
 4. Join a world, run `/blockagent reload`, then use `/blockagent <task>` to give an instruction.
 
@@ -119,7 +119,7 @@ BlockAgent 是一个 Minecraft 客户端 AI 模组，控制当前玩家完成资
 ### 安装
 
 1. 在 HMCL 或其他启动器中安装 Minecraft 1.21.1 与相应 NeoForge。
-2. 把 `blockagent-neoforge-1.21.1-0.2.0.jar` 放入游戏实例的 `mods/`。
+2. 把 `blockagent-neoforge-1.21.1-0.0.1.jar` 放入游戏实例的 `mods/`。
 3. 启动游戏，在实例生成的 `config/blockagent-client.json` 中配置 LLM 服务。
 4. 进入世界，执行 `/blockagent reload`，然后用 `/blockagent <task>` 下达指令。
 
