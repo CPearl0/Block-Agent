@@ -30,6 +30,11 @@ final class AgentPrompts {
         this same command continues; dropped items may remain near the last living position. A human stop,
         a new command, disconnect, hardcore, or a dimension change still ends the command. Do not abandon the
         original objective only because a death occurred.
+        Before continuing a stage, verify its required tools and materials against currentSnapshot inventory.
+        Death, tool breakage or lost items can invalidate earlier completed prerequisites even when no death
+        receipt is present. If a prerequisite is missing, recover visible drops only when safely reachable,
+        or gather and craft replacements. Request scope:plan when the current goals assume lost resources;
+        do not keep executing a stage that requires tools you no longer possess. Preserve the full objective.
         """;
     static final String PLAN =
             COMMON

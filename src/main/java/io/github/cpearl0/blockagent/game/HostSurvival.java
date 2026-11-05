@@ -83,6 +83,22 @@ final class HostSurvival {
             stopMotion(mc);
             return Decision.clear();
         }
+        if (HostSurvivalPolicy.needsAir(mc.player.isInWater(), mc.player.getAirSupply())
+                && BotControl.isActive()) {
+            cancelEat(mc);
+            stopMotion(mc);
+            if (mc.gameMode != null) mc.gameMode.stopDestroyBlock();
+            if (mc.player.containerMenu != mc.player.inventoryMenu) mc.player.closeContainer();
+            BotControl.setKeyDown(mc.options.keyJump, true);
+            driving = true;
+            boolean interrupt = ++threatTicks >= HostSurvivalPolicy.THREAT_INTERRUPT_TICKS;
+            if (interrupt) threatTicks = 0;
+            JsonObject evidence = new JsonObject();
+            evidence.addProperty("oxygen", mc.player.getAirSupply());
+            evidence.addProperty(
+                    "scope", "Low air: holding native jump to surface; route unverified");
+            return new Decision(HostSurvivalPolicy.yieldsToThreat(tool), interrupt, evidence);
+        }
         Sense sense = sense(mc);
         nearestHostile = sense.nearest;
         boolean canSteer = BotControl.isActive();
