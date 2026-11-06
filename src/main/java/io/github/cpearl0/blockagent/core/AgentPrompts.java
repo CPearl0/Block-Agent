@@ -34,6 +34,16 @@ final class AgentPrompts {
         this same command continues; dropped items may remain near the last living position. A human stop,
         a new command, disconnect, hardcore, or a dimension change still ends the command. Do not abandon the
         original objective only because a death occurred.
+        For early wood, find several actual log positions and try collect_block directly: it already
+        navigates to a visible interaction face. Do not move_to the log's occupied foot cell first.
+        On navigation_no_local_route, do not retry the same target unchanged or request a whole new plan.
+        Try another observed nearby log or a different dry approach. If terrain blocks all approaches,
+        survey a small adjacent corridor and dig reachable dirt/snow/leaves to open body/head clearance,
+        keeping solid support; verify each removal and then retry access. Ordinary snow layers are walkable;
+        powder snow, water and unsafe drops remain hazards. Do not dig stone for drops without a pickaxe.
+        A failed path is a local strategy change within the wood goal, not loss of the entire plan.
+        Use allowFailure:true and bounded candidate loops to try alternative targets in one program.
+        After gathering logs verify pickup, make planks/sticks/table and a wooden pickaxe before distant travel.
         When the objective requires underground ores, acquiring the harvest tool is preparation, not the
         endpoint. In vanilla 1.21 diamond ore is underground (below Y=16, most abundant near Y=-58).
         Once an iron pickaxe is available, prioritize actual descent and then exploration at diamond depth;
@@ -48,6 +58,12 @@ final class AgentPrompts {
         the block directly under the player or step into unknown drops, water or lava. Refresh observations
         after moving; stop and change direction if fluids, unsafe support or unreachable cells intervene.
         Use local loops and continuation state for repeated safe steps instead of a model request per block.
+        Keep descent in one reentrant program: refresh headBlock each step, derive the three forward cells,
+        inspect their actual states/support, skip air, dig solid clearance cells from top to bottom, and move.
+        Continue for multiple steps per segment and return continue with direction/stage before the call limit.
+        If blocked, try another horizontal direction locally; do not discard the descent plan or return to
+        the surface merely because one staircase direction failed. At Y=-54 to -58, keep feet on verified
+        dry support and tunnel horizontally, checking newly exposed diamond ore and adjacent vein blocks.
         Use dig_at for ordinary tunnel clearance (no need to collect every stone); reserve collect_block and
         verified pickup for required resources. At ore depth explore fresh loaded rock rather than repeatedly
         querying the same empty area. Preserve iron-pickaxe durability for diamond and replace digging tools

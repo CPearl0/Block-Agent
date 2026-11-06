@@ -111,7 +111,7 @@ final class Navigation {
                 idleTicks = 0;
             }
             BlockPos next = route.get(cursor);
-            Vec3 point = Vec3.atBottomCenterOf(next);
+            Vec3 point = standingPoint(mc, next);
             Vec3 delta = point.subtract(mc.player.position());
             if (Math.abs(delta.y) < .55 && delta.horizontalDistanceSqr() < .0225) {
                 cursor++;
@@ -120,7 +120,7 @@ final class Navigation {
                     return false;
                 }
                 next = route.get(cursor);
-                point = Vec3.atBottomCenterOf(next);
+                point = standingPoint(mc, next);
                 delta = point.subtract(mc.player.position());
             }
             if (!WorldData.safe(mc, next)) {
@@ -145,6 +145,10 @@ final class Navigation {
             BotControl.setKeyDown(mc.options.keySprint, false);
             return false;
         }
+    }
+
+    private static Vec3 standingPoint(Minecraft mc, BlockPos p) {
+        return new Vec3(p.getX() + .5, WorldData.standingY(mc, p), p.getZ() + .5);
     }
 
     private record Node(BlockPos pos, double cost, double score) {}
@@ -180,6 +184,8 @@ final class Navigation {
                             || next.distSqr(start) > 64 * 64
                             || Math.abs(next.getY() - start.getY()) > 24
                             || !WorldData.safe(mc, next)) continue;
+                    double rise = WorldData.standingY(mc, next) - WorldData.standingY(mc, here);
+                    if (rise > 1.001 || rise < -1.001) continue;
                     // A one-block rise needs jump headroom above the source as well as the landing
                     // cell.
                     if (step == 1 && !clear(mc, here.above())) continue;

@@ -571,21 +571,30 @@ final class WorldData {
                     || state.is(Blocks.SWEET_BERRY_BUSH)
                     || state.is(Blocks.POWDER_SNOW)) return false;
         }
+        double standingY = standingY(mc, p);
         var shape = mc.level.getBlockState(p.below()).getCollisionShape(mc.level, p.below());
         if (shape.isEmpty() || Math.abs(shape.max(Direction.Axis.Y) - 1) > 0.001) return false;
         double half = mc.player.getBbWidth() / 2d;
         AABB body =
                 new AABB(
                         p.getX() + .5 - half,
-                        p.getY() + .001,
+                        standingY + .001,
                         p.getZ() + .5 - half,
                         p.getX() + .5 + half,
-                        p.getY() + mc.player.getBbHeight(),
+                        standingY + mc.player.getBbHeight(),
                         p.getZ() + .5 + half);
         AABB feet = new AABB(body.minX, p.getY() - .01, body.minZ, body.maxX, p.getY(), body.maxZ);
         if (shape.toAabbs().stream().noneMatch(box -> box.move(p.below()).intersects(feet)))
             return false;
         return mc.level.noCollision(mc.player, body);
+    }
+
+    /** Ordinary snow layers raise the standing surface inside the foot cell. */
+    static double standingY(Minecraft mc, BlockPos p) {
+        BlockState state = mc.level.getBlockState(p);
+        if (!state.is(Blocks.SNOW)) return p.getY();
+        var shape = state.getCollisionShape(mc.level, p);
+        return p.getY() + (shape.isEmpty() ? 0 : shape.max(Direction.Axis.Y));
     }
 
     static JsonObject candidates(Minecraft mc, JsonObject args, boolean placements) {
