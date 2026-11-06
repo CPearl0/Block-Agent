@@ -554,6 +554,10 @@ final class EvidenceLog {
         copyNumber(data, out, "scannedCells");
         copyNumber(data, out, "unknownCells");
         copyNumber(data, out, "loadedCells");
+        boolean local =
+                number(data, "scannedCells", 4096) <= 64
+                        && data.has("layers")
+                        && data.get("layers").isJsonArray();
         if (data.has("palette") && data.get("palette").isJsonArray()) {
             JsonArray palette = new JsonArray();
             int omitted = 0;
@@ -568,10 +572,26 @@ final class EvidenceLog {
                 String name = text(block, "name");
                 if (name != null) row.addProperty("name", name);
                 if (block.has("token")) row.add("token", block.get("token").deepCopy());
+                if (local) {
+                    copyString(block, row, "collision");
+                    if (block.has("fluid")) row.add("fluid", block.get("fluid").deepCopy());
+                    copyBool(block, row, "fullCubeSupport");
+                }
                 if (!row.isEmpty()) palette.add(row);
             }
             if (!palette.isEmpty()) out.add("palette", palette);
             if (omitted > 0) out.addProperty("omittedPalette", omitted);
+        }
+        if (local && !out.has("omittedPalette")) {
+            JsonObject geometry =
+                    JsonSupport.of(
+                            "layers",
+                            data.get("layers"),
+                            "coordinates",
+                            "+y layers; +z rows; space-separated palette tokens advance +x from bounds.min. Standing C=dry supported clearance, B=not certified, ?=unknown/boundary. Historical, not a route.");
+            out.add("localGeometry", geometry);
+            // Keep complete small maps only; a clipped map must never look complete.
+            if (JsonSupport.bytes(out) > 1200) out.remove("localGeometry");
         }
         return out;
     }
@@ -757,6 +777,14 @@ final class EvidenceLog {
 
     private JsonObject fitEntry(JsonObject entry) {
         if (JsonSupport.bytes(entry) <= perEntryCap) return entry;
+        if (entry.has("outcome") && entry.get("outcome").isJsonObject()) {
+            JsonObject outcome = entry.getAsJsonObject("outcome");
+            if (outcome.has("localGeometry")) {
+                outcome.remove("localGeometry");
+                outcome.addProperty("localGeometryOmitted", true);
+                if (JsonSupport.bytes(entry) <= perEntryCap) return entry;
+            }
+        }
         if (entry.has("message"))
             entry.addProperty("message", clip(entry.get("message").getAsString(), 80));
         trimArrays(entry, 4);

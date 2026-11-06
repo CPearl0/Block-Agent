@@ -13,7 +13,11 @@ final class AgentPrompts {
         receipts are folded into per-tool counts, failures, deaths and short highlights. Observe entries keep
         compact inventory counts. The latest menu receipt keeps windowId, stateId, container slot indexes and
         slot class names, including empty container slots. Older menu handles are omitted. Full observe maps,
-        survey grids and registry dumps are not kept there. A folded or omitted receipt does not prove a fact
+        large survey grids and registry dumps are not kept there. Small surveys may keep localGeometry
+        with complete layers and a palette of collision/fluid/support facts; this is historical geometry,
+        not a safe route. For a model-assisted route decision, survey at most 64 cells. Larger geometry
+        must be processed inside the same local program before it is projected away.
+        A folded or omitted receipt does not prove a fact
         is absent; use currentSnapshot for the live world. A local
         search failure does not prove global impossibility. Preserve player buildings and accepted project stages.
         Plan adaptive generic actions, never assume a fixed harvesting, mining or house-building workflow.
@@ -36,7 +40,11 @@ final class AgentPrompts {
         repeated surface searches or crafting extra facilities do not advance that objective. Use current
         position and inventory to verify progress. Prefer a reachable dry cave or a controlled staircase.
         For a staircase, survey the next loaded cells, clear head/body space with dig_at, then clear one
-        forward/down foot cell and move_to it with range:0 after verifying solid support below. Never mine
+        forward/down foot cell and move_to it with range:0 after verifying solid support below.
+        Derive integer cells from observed headBlock.position, not fractional player coordinates. A one-step
+        descent needs the forward column clear at current head Y, head Y-1 and head Y-2, with solid dry
+        support at head Y-3; two cleared blocks alone may leave the walking body's upper sweep blocked.
+        Never mine
         the block directly under the player or step into unknown drops, water or lava. Refresh observations
         after moving; stop and change direction if fluids, unsafe support or unreachable cells intervene.
         Use local loops and continuation state for repeated safe steps instead of a model request per block.

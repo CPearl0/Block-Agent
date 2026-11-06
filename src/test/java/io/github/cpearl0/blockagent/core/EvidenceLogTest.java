@@ -12,6 +12,105 @@ class EvidenceLogTest {
     private static final String PAD = "EVIDENCE_PAD_DO_NOT_KEEP-" + "x".repeat(1800);
 
     @Test
+    void smallSurveyKeepsExactLayoutAndHazardsButNeverAPartiallyClippedMap() {
+        JsonArray palette = new JsonArray();
+        palette.add(
+                JsonSupport.of(
+                        "token",
+                        "0",
+                        "name",
+                        "minecraft:air",
+                        "collision",
+                        "empty",
+                        "fluid",
+                        "",
+                        "fullCubeSupport",
+                        false));
+        palette.add(
+                JsonSupport.of(
+                        "token",
+                        "1",
+                        "name",
+                        "minecraft:stone",
+                        "collision",
+                        "full_cube",
+                        "fluid",
+                        "",
+                        "fullCubeSupport",
+                        true));
+        palette.add(
+                JsonSupport.of(
+                        "token",
+                        "2",
+                        "name",
+                        "minecraft:lava",
+                        "collision",
+                        "empty",
+                        "fluid",
+                        "minecraft:lava",
+                        "fullCubeSupport",
+                        false));
+        JsonArray layers = new JsonArray();
+        layers.add(
+                JsonSupport.of(
+                        "y",
+                        10,
+                        "blocks",
+                        java.util.List.of("1 2"),
+                        "standing",
+                        java.util.List.of("??")));
+        layers.add(
+                JsonSupport.of(
+                        "y",
+                        11,
+                        "blocks",
+                        java.util.List.of("0 0"),
+                        "standing",
+                        java.util.List.of("CB")));
+        layers.add(
+                JsonSupport.of(
+                        "y",
+                        12,
+                        "blocks",
+                        java.util.List.of("0 0"),
+                        "standing",
+                        java.util.List.of("??")));
+        JsonObject data =
+                JsonSupport.of(
+                        "bounds",
+                        JsonSupport.of(
+                                "min",
+                                JsonSupport.of("x", 1, "y", 10, "z", 3),
+                                "max",
+                                JsonSupport.of("x", 2, "y", 12, "z", 3)),
+                        "scannedCells",
+                        6,
+                        "palette",
+                        palette,
+                        "layers",
+                        layers);
+        JsonObject receipt = receipt("survey_area", new JsonObject(), true, "", "Survey", data);
+        EvidenceLog log = new EvidenceLog(131072, 20480);
+        log.add(receipt);
+        JsonObject out =
+                log.snapshot()
+                        .getAsJsonArray("entries")
+                        .get(0)
+                        .getAsJsonObject()
+                        .getAsJsonObject("outcome");
+        assertEquals(layers, out.getAsJsonObject("localGeometry").get("layers"));
+        assertEquals(palette, out.get("palette"));
+        assertEquals(data.get("bounds"), out.get("bounds"));
+        EvidenceLog narrow = new EvidenceLog(131072, 1000);
+        narrow.add(receipt);
+        assertFalse(narrow.snapshot().toString().contains("\"localGeometry\":"));
+        data.addProperty("scannedCells", 4096);
+        EvidenceLog large = new EvidenceLog(131072, 20480);
+        large.add(receipt("survey_area", new JsonObject(), true, "", "Large survey", data));
+        assertFalse(large.snapshot().toString().contains("\"localGeometry\":"));
+    }
+
+    @Test
     void renderedHistoryStaysUnderBudgetAndDropsBulkyPayloads() {
         EvidenceLog log = new EvidenceLog(131072, BotConfig.Agent.DEFAULT_RENDERED_EVIDENCE_BYTES);
         int raw = feed(log);
