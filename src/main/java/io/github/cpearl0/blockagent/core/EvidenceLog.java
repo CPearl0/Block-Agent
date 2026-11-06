@@ -658,6 +658,10 @@ final class EvidenceLog {
         copyNumber(block, out, "hardness");
         copyBool(block, out, "requiresCorrectTool");
         copyBool(block, out, "correctHeldTool");
+        copyBool(block, out, "fullCubeSupport");
+        copyBool(block, out, "air");
+        copyBool(block, out, "replaceable");
+        copyString(block, out, "fluid");
         return out;
     }
 

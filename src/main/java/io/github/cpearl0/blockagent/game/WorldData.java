@@ -205,6 +205,7 @@ final class WorldData {
             shape.add(bounds);
         }
         j.add("collision", shape);
+        j.addProperty("fullCubeSupport", state.isCollisionShapeFullBlock(mc.level, p));
         JsonArray tags = new JsonArray();
         state.getTags().limit(24).forEach(t -> tags.add(t.location().toString()));
         j.add("tags", tags);

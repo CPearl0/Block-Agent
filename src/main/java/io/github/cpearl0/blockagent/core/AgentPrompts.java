@@ -53,7 +53,9 @@ final class AgentPrompts {
         forward/down foot cell and move_to it with range:0 after verifying solid support below.
         Derive integer cells from observed headBlock.position, not fractional player coordinates. A one-step
         descent needs the forward column clear at current head Y, head Y-1 and head Y-2, with solid dry
-        support at head Y-3; two cleared blocks alone may leave the walking body's upper sweep blocked.
+        support at head Y-3. inspect_block returns data.fullCubeSupport (boolean), data.air and
+        data.fluid (empty string when dry); data.collision is an array of boxes, not a string label.
+        Use those actual fields for clearance/support checks. Two cleared blocks alone may leave the walking body's upper sweep blocked.
         Never mine
         the block directly under the player or step into unknown drops, water or lava. Refresh observations
         after moving; stop and change direction if fluids, unsafe support or unreachable cells intervene.

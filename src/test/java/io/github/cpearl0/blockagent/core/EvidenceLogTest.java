@@ -12,6 +12,36 @@ class EvidenceLogTest {
     private static final String PAD = "EVIDENCE_PAD_DO_NOT_KEEP-" + "x".repeat(1800);
 
     @Test
+    void inspectedSupportAndFluidFactsSurviveProjectionForRouteRepair() {
+        EvidenceLog log = new EvidenceLog(131072, 20480);
+        JsonObject data =
+                JsonSupport.of(
+                        "name",
+                        "minecraft:stone",
+                        "position",
+                        JsonSupport.of("x", 1, "y", -55, "z", 3),
+                        "fullCubeSupport",
+                        true,
+                        "air",
+                        false,
+                        "replaceable",
+                        false,
+                        "fluid",
+                        "minecraft:water");
+        log.add(receipt("inspect_block", new JsonObject(), true, "", "Block", data));
+        JsonObject out =
+                log.snapshot()
+                        .getAsJsonArray("entries")
+                        .get(0)
+                        .getAsJsonObject()
+                        .getAsJsonObject("outcome");
+        assertTrue(out.get("fullCubeSupport").getAsBoolean());
+        assertFalse(out.get("air").getAsBoolean());
+        assertFalse(out.get("replaceable").getAsBoolean());
+        assertEquals("minecraft:water", out.get("fluid").getAsString());
+    }
+
+    @Test
     void smallSurveyKeepsExactLayoutAndHazardsButNeverAPartiallyClippedMap() {
         JsonArray palette = new JsonArray();
         palette.add(
