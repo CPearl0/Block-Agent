@@ -77,18 +77,28 @@ final class Navigation {
         private final Minecraft mc;
         private final BlockPos target;
         private final Predicate<BlockPos> reached;
+        private final boolean centerOnArrival;
         private List<BlockPos> route;
         private int cursor, replans, idleTicks;
         private Vec3 progress;
 
         Controller(Minecraft mc, BlockPos target, double range) {
-            this(mc, target, p -> p.distSqr(target) <= range * range);
+            this(mc, target, p -> p.distSqr(target) <= range * range, false);
         }
 
         Controller(Minecraft mc, BlockPos target, Predicate<BlockPos> reached) {
+            this(mc, target, reached, true);
+        }
+
+        private Controller(
+                Minecraft mc,
+                BlockPos target,
+                Predicate<BlockPos> reached,
+                boolean centerOnArrival) {
             this.mc = mc;
             this.target = target;
             this.reached = reached;
+            this.centerOnArrival = centerOnArrival;
         }
 
         boolean tick() {
@@ -97,7 +107,14 @@ final class Navigation {
                     || !mc.player.inventoryMenu.getCarried().isEmpty())
                 throw new IllegalStateException(
                         "Close the current screen/menu and empty its cursor before moving");
-            if (reached.test(mc.player.blockPosition())) {
+            // Interaction predicates test visibility from a hypothetical cell center. Entering
+            // that cell at its edge does not yet establish actual reach/line of sight.
+            Vec3 arrival =
+                    standingPoint(mc, mc.player.blockPosition()).subtract(mc.player.position());
+            if (reached.test(mc.player.blockPosition())
+                    && (!centerOnArrival
+                            || (Math.abs(arrival.y) < .55
+                                    && arrival.horizontalDistanceSqr() < .0225))) {
                 stop(mc);
                 return true;
             }
@@ -175,6 +192,8 @@ final class Navigation {
                     path.add(p);
                 }
                 Collections.reverse(path);
+                // A predicate can accept the current foot cell before its center is reached.
+                if (path.isEmpty()) path.add(start);
                 return path;
             }
             for (Direction direction : Direction.Plane.HORIZONTAL)
