@@ -57,7 +57,7 @@ public final class LlmClient implements AutoCloseable {
                                 + ex.getClass().getSimpleName());
                 continue;
             }
-            // HTTP errors and invalid model JSON are not transport failures.
+            // HTTP errors are configuration/service failures, not invalid-output retries.
             if (response.statusCode() < 200 || response.statusCode() >= 300)
                 throw new IOException(
                         "LLM HTTP "
@@ -67,12 +67,28 @@ public final class LlmClient implements AutoCloseable {
                                 + ", model "
                                 + provider.model()
                                 + "); inspect provider settings/service");
-            JsonObject envelope =
-                    JsonSupport.object(
-                            JsonParser.parseString(
-                                    new String(response.body(), StandardCharsets.UTF_8)),
-                            "LLM response");
-            JsonObject result = parseObject(extract(envelope));
+            JsonObject envelope;
+            JsonObject result;
+            try {
+                envelope =
+                        JsonSupport.object(
+                                JsonParser.parseString(
+                                        new String(response.body(), StandardCharsets.UTF_8)),
+                                "LLM response");
+                result = parseObject(extract(envelope));
+            } catch (JsonParseException | IllegalArgumentException | IllegalStateException ex) {
+                command.throwIfCancelled();
+                // Nothing from this response has reached the interpreter. Retry the same decision,
+                // never repair/truncate JSON into a potentially different executable program.
+                if (attempt == MAX_ATTEMPTS)
+                    throw new IOException(
+                            "LLM exhausted "
+                                    + MAX_ATTEMPTS
+                                    + " attempts after invalid JSON output; no game actions executed from rejected responses",
+                            ex);
+                report("LLM invalid-output retry: attempt=" + attempt + "/" + MAX_ATTEMPTS);
+                continue;
+            }
             command.throwIfCancelled();
             JsonObject telemetry =
                     JsonSupport.of(

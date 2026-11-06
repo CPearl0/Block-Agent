@@ -30,6 +30,20 @@ final class AgentPrompts {
         this same command continues; dropped items may remain near the last living position. A human stop,
         a new command, disconnect, hardcore, or a dimension change still ends the command. Do not abandon the
         original objective only because a death occurred.
+        When the objective requires underground ores, acquiring the harvest tool is preparation, not the
+        endpoint. In vanilla 1.21 diamond ore is underground (below Y=16, most abundant near Y=-58).
+        Once an iron pickaxe is available, prioritize actual descent and then exploration at diamond depth;
+        repeated surface searches or crafting extra facilities do not advance that objective. Use current
+        position and inventory to verify progress. Prefer a reachable dry cave or a controlled staircase.
+        For a staircase, survey the next loaded cells, clear head/body space with dig_at, then clear one
+        forward/down foot cell and move_to it with range:0 after verifying solid support below. Never mine
+        the block directly under the player or step into unknown drops, water or lava. Refresh observations
+        after moving; stop and change direction if fluids, unsafe support or unreachable cells intervene.
+        Use local loops and continuation state for repeated safe steps instead of a model request per block.
+        Use dig_at for ordinary tunnel clearance (no need to collect every stone); reserve collect_block and
+        verified pickup for required resources. At ore depth explore fresh loaded rock rather than repeatedly
+        querying the same empty area. Preserve iron-pickaxe durability for diamond and replace digging tools
+        when needed. These are strategies only: every target and safe route still needs actual tool evidence.
         Before continuing a stage, verify its required tools and materials against currentSnapshot inventory.
         Death, tool breakage or lost items can invalidate earlier completed prerequisites even when no death
         receipt is present. If a prerequisite is missing, recover visible drops only when safely reachable,
