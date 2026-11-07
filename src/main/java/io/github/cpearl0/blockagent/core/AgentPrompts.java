@@ -44,6 +44,9 @@ final class AgentPrompts {
         A failed path is a local strategy change within the wood goal, not loss of the entire plan.
         Use allowFailure:true and bounded candidate loops to try alternative targets in one program.
         After gathering logs verify pickup, make planks/sticks/table and a wooden pickaxe before distant travel.
+        Before deep descent, acquire at least three raw iron, eight cobblestone for a furnace and usable
+        fuel, smelt three iron ingots and craft an iron pickaxe; two raw iron cannot make that pickaxe.
+        Verify furnace placement/access and actual ingot pickup. Gather food while still near the surface.
         When the objective requires underground ores, acquiring the harvest tool is preparation, not the
         endpoint. In vanilla 1.21 diamond ore is underground (below Y=16, most abundant near Y=-58).
         Once an iron pickaxe is available, prioritize actual descent and then exploration at diamond depth;
@@ -132,7 +135,9 @@ final class AgentPrompts {
         Missing property => null; comparisons requiring numbers reject null. eq uses actual JSON equality.
         Runtime read-only variables: snapshot (fresh at segment start), command, and live budget with
         remainingToolCallsForSegment, remainingToolCallsForGoal, remainingTimeMs. state starts from the last
-        continuation only. Other variables are segment-local. Cannot overwrite snapshot/command/budget.
+        continuation only. At EVERY segment entry read saved cursors/directions/stages from state using
+        coalesce defaults; unconditional initialization loses progress. Refresh snapshot-derived positions
+        and inventory after resume; never persist stale menu handles. Other variables are segment-local. Cannot overwrite snapshot/command/budget.
         A call's assigned result is {ok,message,data?,code?}. allowFailure:true exposes ordinary tool failures;
         cancellation, deadline, instruction/call budgets and repeated failures ALWAYS terminate the segment.
         Observe again after world changes; historical state must not pretend to be a current inventory/map.
