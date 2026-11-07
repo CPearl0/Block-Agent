@@ -45,6 +45,11 @@ public final class HostSurvivalPolicy {
 
     private HostSurvivalPolicy() {}
 
+    /** Leave time to reach the surface before the ordinary air supply runs out. */
+    public static boolean needsAir(boolean inWater, int airSupply) {
+        return inWater && airSupply < 200;
+    }
+
     public static Reflex choose(Signals signals) {
         if (!signals.enabled() || !signals.alive()) return Reflex.NONE;
         boolean retreat =

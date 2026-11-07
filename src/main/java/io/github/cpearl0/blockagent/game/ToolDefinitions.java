@@ -17,7 +17,7 @@ final class ToolDefinitions {
         add(
                 tools,
                 "inspect_block",
-                "Read one loaded block including namespaced identifier, real properties, tags, collision shape and fluid.",
+                "Read one loaded block including namespaced identifier, real properties, tags, collision box arrays, fullCubeSupport boolean, air and fluid (empty string when dry).",
                 "{\"position\":{\"$ref\":\"#/$defs/position\"}}");
         add(
                 tools,
