@@ -34,6 +34,22 @@ public final class LlmClient implements AutoCloseable {
 
     public JsonObject complete(String system, JsonObject input, CancellationToken command)
             throws Exception {
+        // A decision has one budget across transport and malformed-output retries. Closing a
+        // transport must never hold the agent worker (or the shared deadline scheduler).
+        try (CancellationToken decision =
+                new CancellationToken(
+                        command, Math.min(120_000, provider.timeoutMs() * MAX_ATTEMPTS + 1000))) {
+            try {
+                return completeWithinBudget(system, input, decision);
+            } catch (CancellationException ex) {
+                command.throwIfCancelled();
+                throw new IOException("LLM decision deadline exceeded; command retained", ex);
+            }
+        }
+    }
+
+    private JsonObject completeWithinBudget(
+            String system, JsonObject input, CancellationToken command) throws Exception {
         command.throwIfCancelled();
         provider.requireConfigured();
         String body = requestBody(system, input).toString();
@@ -136,11 +152,13 @@ public final class LlmClient implements AutoCloseable {
                         .build();
         active.add(http);
         try (CancellationToken request =
-                new CancellationToken(command, Math.min(75_000, provider.timeoutMs()))) {
+                new CancellationToken(command, Math.min(45_000, provider.timeoutMs()))) {
             if (closed.get()) throw new IllegalStateException("LLM client is closed");
             CompletableFuture<HttpResponse<byte[]>> pending =
                     http.sendAsync(builder.build(), info -> new BoundedBody());
-            try (AutoCloseable registration = request.onCancel(() -> pending.cancel(true))) {
+            try (AutoCloseable registration =
+                    request.onCancel(
+                            () -> CompletableFuture.runAsync(() -> pending.cancel(true)))) {
                 return request.await(pending);
             } catch (CancellationException ex) {
                 command.throwIfCancelled();
@@ -149,7 +167,9 @@ public final class LlmClient implements AutoCloseable {
             }
         } finally {
             active.remove(http);
-            http.shutdownNow();
+            // JDK transport teardown can wait on its internal connection/subscriber locks.
+            // Do not let cleanup extend the bounded decision or stall all token deadlines.
+            CompletableFuture.runAsync(http::shutdownNow);
         }
     }
 

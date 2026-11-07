@@ -198,6 +198,44 @@ class LlmClientTest {
     }
 
     @Test
+    void droppedConnectionThenStalledBodiesCannotFreezeGenerating() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var executor = Executors.newCachedThreadPool();
+        server.setExecutor(executor);
+        AtomicInteger calls = new AtomicInteger();
+        server.createContext(
+                "/chat/completions",
+                exchange -> {
+                    int call = calls.incrementAndGet();
+                    try (exchange) {
+                        exchange.getRequestBody().readAllBytes();
+                        if (call == 1)
+                            return; // IOException before headers, then body stalls on retries.
+                        exchange.sendResponseHeaders(200, RESPONSE.length);
+                        try {
+                            Thread.sleep(5000);
+                        } catch (InterruptedException ignored) {
+                        }
+                    }
+                });
+        server.start();
+        long started = System.nanoTime();
+        try (LlmClient client = client(server, 200);
+                CancellationToken command = new CancellationToken(10000)) {
+            assertThrows(
+                    java.io.IOException.class,
+                    () -> client.complete("fixture", new JsonObject(), command));
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 4000);
+            assertTrue(calls.get() >= 2);
+            assertTrue(calls.get() <= 4);
+            assertFalse(command.isCancelled());
+        } finally {
+            server.stop(0);
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void commandCancellationAbortsStalledResponseWithoutRetry() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         AtomicInteger calls = new AtomicInteger();
