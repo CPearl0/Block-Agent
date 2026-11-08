@@ -473,7 +473,8 @@ public final class AgentController implements AutoCloseable {
                                         "startedAtMs",
                                         started,
                                         "elapsedTimeMs",
-                                        System.currentTimeMillis() - started),
+                                        TimeUnit.NANOSECONDS.toMillis(
+                                                System.nanoTime() - stats.startedNanos)),
                                 token,
                                 budget);
                 assertCurrent(owner, token);
@@ -738,7 +739,7 @@ public final class AgentController implements AutoCloseable {
                         "startedAtMs",
                         started,
                         "elapsedTimeMs",
-                        System.currentTimeMillis() - started),
+                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - stats.startedNanos)),
                 "commandOrigin",
                 memory.commandOrigin(commandId),
                 "initialSnapshot",
@@ -925,6 +926,7 @@ public final class AgentController implements AutoCloseable {
     }
 
     private final class ExecutionStats {
+        final long startedNanos = System.nanoTime();
         final long owner;
         final String commandId;
         volatile int llmRequests, toolCalls, localSegments, deathResumes;

@@ -22,9 +22,8 @@ import net.minecraft.world.phys.Vec3;
 /**
  * Client-tick survival. Reflex choice is {@link HostSurvivalPolicy}; this class only reads the
  * loaded world and drives ordinary controls. It does not equip armor, raise a shield, shoot, place
- * water, or build cover. Retreat is a straight walk away from the nearest hostile, not a path
- * through walls. Same-dimension respawn is a client command packet; hardcore is left on the death
- * screen.
+ * water, or build cover. Retreat considers visible hostiles and tries safe lateral steps when
+ * blocked. Same-dimension respawn is a client command packet; hardcore is left on the death screen.
  */
 final class HostSurvival {
     private static final Set<String> SKIP_FOOD =
@@ -42,6 +41,9 @@ final class HostSurvival {
         }
     }
 
+    private Vec3 retreatAnchor;
+    private int stalledRetreatTicks;
+    private int retreatTurn;
     private int respawnDelay;
     private int threatTicks;
     private boolean holdingRetreat;
@@ -83,6 +85,22 @@ final class HostSurvival {
             stopMotion(mc);
             return Decision.clear();
         }
+        if (HostSurvivalPolicy.needsAir(mc.player.isInWater(), mc.player.getAirSupply())
+                && BotControl.isActive()) {
+            cancelEat(mc);
+            stopMotion(mc);
+            if (mc.gameMode != null) mc.gameMode.stopDestroyBlock();
+            if (mc.player.containerMenu != mc.player.inventoryMenu) mc.player.closeContainer();
+            BotControl.setKeyDown(mc.options.keyJump, true);
+            driving = true;
+            boolean interrupt = ++threatTicks >= HostSurvivalPolicy.THREAT_INTERRUPT_TICKS;
+            if (interrupt) threatTicks = 0;
+            JsonObject evidence = new JsonObject();
+            evidence.addProperty("oxygen", mc.player.getAirSupply());
+            evidence.addProperty(
+                    "scope", "Low air: holding native jump to surface; route unverified");
+            return new Decision(HostSurvivalPolicy.yieldsToThreat(tool), interrupt, evidence);
+        }
         Sense sense = sense(mc);
         nearestHostile = sense.nearest;
         boolean canSteer = BotControl.isActive();
@@ -116,6 +134,9 @@ final class HostSurvival {
         }
         threatTicks = 0;
         holdingRetreat = false;
+        retreatAnchor = null;
+        stalledRetreatTicks = 0;
+        retreatTurn = 0;
         if ("eat".equals(tool)) {
             if (eatPhase != 0) cancelEat(mc);
             stopMotion(mc);
@@ -172,7 +193,28 @@ final class HostSurvival {
             away = Vec3.atCenterOf(sense.water).subtract(mc.player.position());
         else away = new Vec3(-mc.player.getLookAngle().x, 0, -mc.player.getLookAngle().z);
         if (away.lengthSqr() < 1.0e-4) away = new Vec3(0, 0, 1);
-        Navigation.look(mc, mc.player.getEyePosition().add(away.normalize()));
+        if (retreatAnchor == null || mc.player.position().distanceToSqr(retreatAnchor) > 0.25) {
+            retreatAnchor = mc.player.position();
+            stalledRetreatTicks = 0;
+        } else if (++stalledRetreatTicks >= 20) {
+            stalledRetreatTicks = 0;
+            retreatTurn++;
+        }
+        // Recheck loaded, supported foot cells; never steer blindly into a drop.
+        Vec3 chosen = null;
+        for (int i = 0; i < 4; i++) {
+            Vec3 candidate = away.normalize().yRot((float) ((retreatTurn + i) * Math.PI / 2));
+            BlockPos foot = BlockPos.containing(mc.player.position().add(candidate));
+            if (WorldData.safe(mc, foot)) {
+                chosen = candidate;
+                break;
+            }
+        }
+        if (chosen == null) {
+            stopMotion(mc);
+            return;
+        }
+        Navigation.look(mc, mc.player.getEyePosition().add(chosen));
         mc.player.setXRot(0);
         BotControl.setKeyDown(mc.options.keyDown, false);
         BotControl.setKeyDown(mc.options.keyLeft, false);
@@ -305,7 +347,7 @@ final class HostSurvival {
         Vec3 focus = null;
         AABB box = mc.player.getBoundingBox().inflate(HostSurvivalPolicy.RELEASE_DISTANCE + 4);
         for (Entity entity : mc.level.getEntities(mc.player, box)) {
-            if (!hostileTo(mc, entity)) continue;
+            if (!hostileTo(mc, entity) || !mc.player.hasLineOfSight(entity)) continue;
             double distance = mc.player.distanceTo(entity);
             if (entity instanceof Creeper creeper
                     && creeper.getSwelling(1f) > 0.05f

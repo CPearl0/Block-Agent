@@ -8,6 +8,15 @@ import org.junit.jupiter.api.Test;
 
 class HostSurvivalPolicyTest {
     @Test
+    void lowAirSurfacesBeforeDrowningButDoesNotJumpOnLand() {
+        assertTrue(HostSurvivalPolicy.needsAir(true, 199));
+        assertTrue(HostSurvivalPolicy.needsAir(true, 0));
+        assertFalse(HostSurvivalPolicy.needsAir(true, 200));
+        assertFalse(HostSurvivalPolicy.needsAir(true, 300));
+        assertFalse(HostSurvivalPolicy.needsAir(false, 0));
+    }
+
+    @Test
     void retreatBeatsHungerAndHoldsUntilTheHostileIsClear() {
         HostSurvivalPolicy.Signals threatened = signals(true, 8f, 6, true, 4, false, true, true);
         assertEquals(HostSurvivalPolicy.Reflex.RETREAT, HostSurvivalPolicy.choose(threatened));

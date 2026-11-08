@@ -82,6 +82,39 @@ class ProgramInterpreterTest {
     }
 
     @Test
+    void continuationReadsSavedCursorWithFreshSnapshot() throws Exception {
+        FakeTools tools = new FakeTools();
+        JsonArray code =
+                program(
+                        """
+            [{"op":"return","value":{"status":"continue","summary":"saved cursor","state":{
+              "cursor":{"add":[{"coalesce":[{"var":"state.cursor"},0]},1]},
+              "y":{"var":"snapshot.y"}}}}]
+            """);
+        try (CancellationToken token = new CancellationToken(10000)) {
+            ProgramInterpreter interpreter = new ProgramInterpreter(LIMITS, tools, r -> {});
+            JsonObject first =
+                    interpreter.run(
+                            code,
+                            JsonSupport.of("y", 10),
+                            new JsonObject(),
+                            new JsonObject(),
+                            token,
+                            new ProgramInterpreter.Budget());
+            JsonObject second =
+                    interpreter.run(
+                            code,
+                            JsonSupport.of("y", -5),
+                            first.getAsJsonObject("state"),
+                            new JsonObject(),
+                            token,
+                            new ProgramInterpreter.Budget());
+            assertEquals(2, second.getAsJsonObject("state").get("cursor").getAsInt());
+            assertEquals(-5, second.getAsJsonObject("state").get("y").getAsInt());
+        }
+    }
+
+    @Test
     void sharedCallBudgetSurvivesFreshInterpreterSegments() throws Exception {
         FakeTools tools = new FakeTools();
         ProgramInterpreter.Budget shared = new ProgramInterpreter.Budget();

@@ -9,7 +9,7 @@ BlockAgent is a Minecraft client-side AI mod that controls the current player to
 ### Installation
 
 1. Install Minecraft 1.21.1 and the corresponding NeoForge version using HMCL or another launcher.
-2. Place `blockagent-neoforge-1.21.1-0.0.1.jar` in the game instance's `mods/` directory.
+2. Place `blockagent-neoforge-1.21.1-0.0.2.jar` in the game instance's `mods/` directory.
 3. Launch the game and configure your LLM service in the generated `config/blockagent-client.json`.
 4. Join a world, run `/blockagent reload`, then use `/blockagent <task>` to give an instruction.
 
@@ -56,6 +56,8 @@ Feedback appears in local chat, and control commands are not sent to the server.
 `survival` is read on the client tick and does not ask the model every frame. Missing keys use the defaults above, including for an existing config file that has no `survival` section. `hostThreatPolicy` eats when food is at or below 14 or health is at or below 6 hearts, backs away from hostiles inside 8 blocks (and keeps going until they are 12 blocks away), and pauses dig, collect, place, and move while doing so. A threat that lasts about 10 seconds fails the paused action once so the same goal can choose another approach. `maxDeathResumes` (default 8) caps automatic respawns; the next death ends the command. Set `autoResumeAfterDeath` to false to end the task on death.
 
 The host does not equip armor, raise a shield, shoot, place water, or build cover. Retreat is a straight walk, so a wall can stop it. Items dropped at death are not picked up automatically; the same goal continues and can collect them if they are still loaded. Hardcore deaths and a respawn that changes dimension still end the command. A death that happens entirely while a model request is in flight still respawns and keeps the command, but it may not increment `deathResumes` until the next dead-player tool result.
+
+LLM transport failures retry the same decision up to four attempts, each with a fresh connection and a monotonic deadline capped at 75 seconds (or the configured `provider.timeoutMs`, if shorter). Cancellation stops retries immediately. HTTP errors and invalid model JSON end the call. Task elapsed time also uses a monotonic clock.
 
 ### Building and Development
 
@@ -119,7 +121,7 @@ BlockAgent 是一个 Minecraft 客户端 AI 模组，控制当前玩家完成资
 ### 安装
 
 1. 在 HMCL 或其他启动器中安装 Minecraft 1.21.1 与相应 NeoForge。
-2. 把 `blockagent-neoforge-1.21.1-0.0.1.jar` 放入游戏实例的 `mods/`。
+2. 把 `blockagent-neoforge-1.21.1-0.0.2.jar` 放入游戏实例的 `mods/`。
 3. 启动游戏，在实例生成的 `config/blockagent-client.json` 中配置 LLM 服务。
 4. 进入世界，执行 `/blockagent reload`，然后用 `/blockagent <task>` 下达指令。
 
@@ -166,6 +168,8 @@ BlockAgent 是一个 Minecraft 客户端 AI 模组，控制当前玩家完成资
 `survival` 在客户端 tick 上执行，不会每帧询问模型。缺少的键使用上面的默认值，已有且没有 `survival` 段的配置文件也一样。`hostThreatPolicy` 会在饥饿值不高于 14 或生命值不高于 6 颗心时进食，在 8 格内的敌对生物旁后退（直到拉开到 12 格），并在此期间暂停挖掘、收集、放置和移动。威胁持续约 10 秒时，被暂停的动作失败一次，以便同一目标改换做法。`maxDeathResumes`（默认 8）限制自动重生次数，下一次死亡会结束指令。把 `autoResumeAfterDeath` 设为 false 会在死亡时结束任务。
 
 主机不会自动穿戴护甲、举盾、射击、放水或搭掩护。撤退是直线行走，墙可以挡住它。死亡掉落不会自动捡起；同一目标会继续，掉落物仍在加载范围内时可以去捡。极限模式，以及重生后维度发生变化，仍会结束指令。若死亡完全发生在一次模型请求期间，主机仍会重生并保留指令，但 `deathResumes` 可能要到下一次“玩家已死亡”的工具结果才增加。
+
+LLM 传输故障会用相同决策输入重试，最多四次；每次新建连接，使用单调时钟计时，截止时间取 75 秒与 `provider.timeoutMs` 中较短者。取消立即终止重试。HTTP 错误和模型 JSON 无效会结束调用。任务耗时同样采用单调时钟。
 
 ### 构建与开发
 

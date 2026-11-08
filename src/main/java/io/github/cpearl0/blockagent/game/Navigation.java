@@ -77,18 +77,28 @@ final class Navigation {
         private final Minecraft mc;
         private final BlockPos target;
         private final Predicate<BlockPos> reached;
+        private final boolean centerOnArrival;
         private List<BlockPos> route;
         private int cursor, replans, idleTicks;
         private Vec3 progress;
 
         Controller(Minecraft mc, BlockPos target, double range) {
-            this(mc, target, p -> p.distSqr(target) <= range * range);
+            this(mc, target, p -> p.distSqr(target) <= range * range, false);
         }
 
         Controller(Minecraft mc, BlockPos target, Predicate<BlockPos> reached) {
+            this(mc, target, reached, true);
+        }
+
+        private Controller(
+                Minecraft mc,
+                BlockPos target,
+                Predicate<BlockPos> reached,
+                boolean centerOnArrival) {
             this.mc = mc;
             this.target = target;
             this.reached = reached;
+            this.centerOnArrival = centerOnArrival;
         }
 
         boolean tick() {
@@ -97,7 +107,14 @@ final class Navigation {
                     || !mc.player.inventoryMenu.getCarried().isEmpty())
                 throw new IllegalStateException(
                         "Close the current screen/menu and empty its cursor before moving");
-            if (reached.test(mc.player.blockPosition())) {
+            // Interaction predicates test visibility from a hypothetical cell center. Entering
+            // that cell at its edge does not yet establish actual reach/line of sight.
+            Vec3 arrival =
+                    standingPoint(mc, mc.player.blockPosition()).subtract(mc.player.position());
+            if (reached.test(mc.player.blockPosition())
+                    && (!centerOnArrival
+                            || (Math.abs(arrival.y) < .55
+                                    && arrival.horizontalDistanceSqr() < .0225))) {
                 stop(mc);
                 return true;
             }
@@ -111,7 +128,7 @@ final class Navigation {
                 idleTicks = 0;
             }
             BlockPos next = route.get(cursor);
-            Vec3 point = Vec3.atBottomCenterOf(next);
+            Vec3 point = standingPoint(mc, next);
             Vec3 delta = point.subtract(mc.player.position());
             if (Math.abs(delta.y) < .55 && delta.horizontalDistanceSqr() < .0225) {
                 cursor++;
@@ -120,7 +137,7 @@ final class Navigation {
                     return false;
                 }
                 next = route.get(cursor);
-                point = Vec3.atBottomCenterOf(next);
+                point = standingPoint(mc, next);
                 delta = point.subtract(mc.player.position());
             }
             if (!WorldData.safe(mc, next)) {
@@ -147,6 +164,10 @@ final class Navigation {
         }
     }
 
+    private static Vec3 standingPoint(Minecraft mc, BlockPos p) {
+        return new Vec3(p.getX() + .5, WorldData.standingY(mc, p), p.getZ() + .5);
+    }
+
     private record Node(BlockPos pos, double cost, double score) {}
 
     private static List<BlockPos> plan(Minecraft mc, BlockPos target, Predicate<BlockPos> reached) {
@@ -171,6 +192,8 @@ final class Navigation {
                     path.add(p);
                 }
                 Collections.reverse(path);
+                // A predicate can accept the current foot cell before its center is reached.
+                if (path.isEmpty()) path.add(start);
                 return path;
             }
             for (Direction direction : Direction.Plane.HORIZONTAL)
@@ -180,6 +203,8 @@ final class Navigation {
                             || next.distSqr(start) > 64 * 64
                             || Math.abs(next.getY() - start.getY()) > 24
                             || !WorldData.safe(mc, next)) continue;
+                    double rise = WorldData.standingY(mc, next) - WorldData.standingY(mc, here);
+                    if (rise > 1.001 || rise < -1.001) continue;
                     // A one-block rise needs jump headroom above the source as well as the landing
                     // cell.
                     if (step == 1 && !clear(mc, here.above())) continue;

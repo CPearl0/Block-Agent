@@ -13,7 +13,11 @@ final class AgentPrompts {
         receipts are folded into per-tool counts, failures, deaths and short highlights. Observe entries keep
         compact inventory counts. The latest menu receipt keeps windowId, stateId, container slot indexes and
         slot class names, including empty container slots. Older menu handles are omitted. Full observe maps,
-        survey grids and registry dumps are not kept there. A folded or omitted receipt does not prove a fact
+        large survey grids and registry dumps are not kept there. Small surveys may keep localGeometry
+        with complete layers and a palette of collision/fluid/support facts; this is historical geometry,
+        not a safe route. For a model-assisted route decision, survey at most 64 cells. Larger geometry
+        must be processed inside the same local program before it is projected away.
+        A folded or omitted receipt does not prove a fact
         is absent; use currentSnapshot for the live world. A local
         search failure does not prove global impossibility. Preserve player buildings and accepted project stages.
         Plan adaptive generic actions, never assume a fixed harvesting, mining or house-building workflow.
@@ -30,6 +34,50 @@ final class AgentPrompts {
         this same command continues; dropped items may remain near the last living position. A human stop,
         a new command, disconnect, hardcore, or a dimension change still ends the command. Do not abandon the
         original objective only because a death occurred.
+        For early wood, find several actual log positions and try collect_block directly: it already
+        navigates to a visible interaction face. Do not move_to the log's occupied foot cell first.
+        On navigation_no_local_route, do not retry the same target unchanged or request a whole new plan.
+        Try another observed nearby log or a different dry approach. If terrain blocks all approaches,
+        survey a small adjacent corridor and dig reachable dirt/snow/leaves to open body/head clearance,
+        keeping solid support; verify each removal and then retry access. Ordinary snow layers are walkable;
+        powder snow, water and unsafe drops remain hazards. Do not dig stone for drops without a pickaxe.
+        A failed path is a local strategy change within the wood goal, not loss of the entire plan.
+        Use allowFailure:true and bounded candidate loops to try alternative targets in one program.
+        After gathering logs verify pickup, make planks/sticks/table and a wooden pickaxe before distant travel.
+        Before deep descent, acquire at least three raw iron, eight cobblestone for a furnace and usable
+        fuel, smelt three iron ingots and craft an iron pickaxe; two raw iron cannot make that pickaxe.
+        Verify furnace placement/access and actual ingot pickup. Gather food while still near the surface.
+        When the objective requires underground ores, acquiring the harvest tool is preparation, not the
+        endpoint. In vanilla 1.21 diamond ore is underground (below Y=16, most abundant near Y=-58).
+        Once an iron pickaxe is available, prioritize actual descent and then exploration at diamond depth;
+        repeated surface searches or crafting extra facilities do not advance that objective. Use current
+        position and inventory to verify progress. Prefer a reachable dry cave or a controlled staircase.
+        For a staircase, survey the next loaded cells, clear head/body space with dig_at, then clear one
+        forward/down foot cell and move_to it with range:0 after verifying solid support below.
+        Derive integer cells from observed headBlock.position, not fractional player coordinates. A one-step
+        descent needs the forward column clear at current head Y, head Y-1 and head Y-2, with solid dry
+        support at head Y-3. inspect_block returns data.fullCubeSupport (boolean), data.air and
+        data.fluid (empty string when dry); data.collision is an array of boxes, not a string label.
+        Use those actual fields for clearance/support checks. Two cleared blocks alone may leave the walking body's upper sweep blocked.
+        Never mine
+        the block directly under the player or step into unknown drops, water or lava. Refresh observations
+        after moving; stop and change direction if fluids, unsafe support or unreachable cells intervene.
+        Use local loops and continuation state for repeated safe steps instead of a model request per block.
+        Keep descent in one reentrant program: refresh headBlock each step, derive the three forward cells,
+        inspect their actual states/support, skip air, dig solid clearance cells from top to bottom, and move.
+        Continue for multiple steps per segment and return continue with direction/stage before the call limit.
+        If blocked, try another horizontal direction locally; do not discard the descent plan or return to
+        the surface merely because one staircase direction failed. At Y=-54 to -58, keep feet on verified
+        dry support and tunnel horizontally, checking newly exposed diamond ore and adjacent vein blocks.
+        Use dig_at for ordinary tunnel clearance (no need to collect every stone); reserve collect_block and
+        verified pickup for required resources. At ore depth explore fresh loaded rock rather than repeatedly
+        querying the same empty area. Preserve iron-pickaxe durability for diamond and replace digging tools
+        when needed. These are strategies only: every target and safe route still needs actual tool evidence.
+        Before continuing a stage, verify its required tools and materials against currentSnapshot inventory.
+        Death, tool breakage or lost items can invalidate earlier completed prerequisites even when no death
+        receipt is present. If a prerequisite is missing, recover visible drops only when safely reachable,
+        or gather and craft replacements. Request scope:plan when the current goals assume lost resources;
+        do not keep executing a stage that requires tools you no longer possess. Preserve the full objective.
         """;
     static final String PLAN =
             COMMON
@@ -87,7 +135,9 @@ final class AgentPrompts {
         Missing property => null; comparisons requiring numbers reject null. eq uses actual JSON equality.
         Runtime read-only variables: snapshot (fresh at segment start), command, and live budget with
         remainingToolCallsForSegment, remainingToolCallsForGoal, remainingTimeMs. state starts from the last
-        continuation only. Other variables are segment-local. Cannot overwrite snapshot/command/budget.
+        continuation only. At EVERY segment entry read saved cursors/directions/stages from state using
+        coalesce defaults; unconditional initialization loses progress. Refresh snapshot-derived positions
+        and inventory after resume; never persist stale menu handles. Other variables are segment-local. Cannot overwrite snapshot/command/budget.
         A call's assigned result is {ok,message,data?,code?}. allowFailure:true exposes ordinary tool failures;
         cancellation, deadline, instruction/call budgets and repeated failures ALWAYS terminate the segment.
         Observe again after world changes; historical state must not pretend to be a current inventory/map.
